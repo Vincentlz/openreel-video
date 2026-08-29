@@ -36,7 +36,21 @@ export interface TimelineBeatAnalysis {
 
 export interface Track {
   readonly id: string;
+  /**
+   * Legacy serialization hint retained for older OpenReel readers. New code
+   * must resolve behavior from the timeline item, not from this value.
+   */
   readonly type: "video" | "audio" | "image" | "text" | "graphics";
+  /** Standard tracks accept every timeline item kind. Missing means standard. */
+  readonly mode?: "standard";
+  /** Editorial meaning used for naming, captions, and audio mixing. */
+  readonly role?:
+    | "general"
+    | "captions"
+    | "dialogue"
+    | "music"
+    | "effects"
+    | "ambience";
   readonly name: string;
   readonly clips: Clip[];
   readonly transitions: Transition[];

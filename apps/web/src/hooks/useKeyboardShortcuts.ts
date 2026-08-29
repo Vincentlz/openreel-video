@@ -17,6 +17,7 @@ import {
   splitTimelineItem,
   trimTimelineItemToPlayhead,
 } from "../utils/timeline-item-actions";
+import { editingFrameStepSeconds } from "../components/editor/editing-frame-rate";
 
 export function useKeyboardShortcuts() {
   const [showShortcutsOverlay, setShowShortcutsOverlay] = useState(false);
@@ -48,12 +49,12 @@ export function useKeyboardShortcuts() {
   }, [togglePlayback]);
 
   const handleFrameBack = useCallback(() => {
-    seekRelative(-1 / 30);
-  }, [seekRelative]);
+    seekRelative(-editingFrameStepSeconds(project.settings.frameRate));
+  }, [seekRelative, project.settings.frameRate]);
 
   const handleFrameForward = useCallback(() => {
-    seekRelative(1 / 30);
-  }, [seekRelative]);
+    seekRelative(editingFrameStepSeconds(project.settings.frameRate));
+  }, [seekRelative, project.settings.frameRate]);
 
   const handleSecondBack = useCallback(() => {
     seekRelative(-1);

@@ -60,7 +60,7 @@ describe("HeadlessHost", () => {
 
   it("returns a typed failure from runJob with no job runner", async () => {
     const host = new HeadlessHost(makeEmptyProject());
-    const res = await host.runJob("transcribe", {});
+    const res = await host.runJob("exportVideo", {});
     expect(res.ok).toBe(false);
   });
 });

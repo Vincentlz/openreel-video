@@ -5,7 +5,11 @@ import type { Clip, Track, TransitionType } from "@openreel/core";
 import { useProjectStore } from "../../../stores/project-store";
 import { useUIStore } from "../../../stores/ui-store";
 import { useTimelineStore } from "../../../stores/timeline-store";
-import { calculateSnap, getClipStyle } from "./utils";
+import {
+  calculateSnap,
+  getClipStyle,
+  getClipWaveformBarAmplitudes,
+} from "./utils";
 import { useClipContextMenuItems } from "./ClipContextMenu";
 import { toast } from "../../../stores/notification-store";
 import { getTransitionBridge } from "../../../bridges/transition-bridge";
@@ -28,7 +32,7 @@ interface ClipComponentProps {
     clipId: string,
     newStartTime: number,
     targetTrackId?: string,
-  ) => void;
+  ) => void | Promise<void>;
   onSnapIndicator: (time: number | null) => void;
   onTrimClip?: (
     clipId: string,
@@ -108,7 +112,9 @@ export const ClipComponent: React.FC<ClipComponentProps> = ({
     scrollTop: 0,
   });
   const mousePositionRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const pendingDropRef = useRef<{ time: number; targetTrackId?: string }>({ time: 0 });
+  const pendingDropRef = useRef<{ time: number; targetTrackId?: string }>({
+    time: clip.startTime,
+  });
   const dragPendingRef = useRef<{ active: boolean; startX: number; startY: number }>({
     active: false,
     startX: 0,
@@ -129,11 +135,12 @@ export const ClipComponent: React.FC<ClipComponentProps> = ({
   const left = clip.startTime * pixelsPerSecond;
   const width = clip.duration * pixelsPerSecond;
 
-  const isVideo = track.type === "video";
-  const isAudio = track.type === "audio";
-  const isImage = track.type === "image";
+  const clipMediaType = mediaItem?.type ?? track.type;
+  const isVideo = clipMediaType === "video";
+  const isAudio = clipMediaType === "audio";
+  const isImage = clipMediaType === "image";
   const isMotionClip = Boolean(clip.metadata?.motionClip);
-  const clipStyle = getClipStyle(track.type);
+  const clipStyle = getClipStyle(clipMediaType);
 
   const handleClick = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
@@ -501,14 +508,14 @@ export const ClipComponent: React.FC<ClipComponentProps> = ({
       const scrollTop = timelineRef.current?.scrollTop || 0;
       const mouseY = e.clientY - timelineRect.top + scrollTop;
       let targetTrackId: string | undefined;
-      let hoveredTrackType: string | undefined;
+      let hoveredTrackIsLocked = false;
       let cumulativeY = 0;
 
       for (const t of allTracks) {
         const height = trackHeights.get(t.id) || 48;
         if (mouseY >= cumulativeY && mouseY < cumulativeY + height) {
-          hoveredTrackType = t.type;
-          if (t.type === track.type && t.id !== track.id) {
+          hoveredTrackIsLocked = Boolean(t.locked);
+          if (!t.locked && t.id !== track.id) {
             targetTrackId = t.id;
           }
           break;
@@ -516,8 +523,7 @@ export const ClipComponent: React.FC<ClipComponentProps> = ({
         cumulativeY += height;
       }
 
-      const isOverDifferentTrackType = hoveredTrackType !== undefined && hoveredTrackType !== track.type;
-      setIsInvalidDrop(isOverDifferentTrackType);
+      setIsInvalidDrop(hoveredTrackIsLocked);
 
       pendingDropRef.current = { time: snapResult.time, targetTrackId };
 
@@ -532,10 +538,7 @@ export const ClipComponent: React.FC<ClipComponentProps> = ({
       const companions = multiDragSnapshotRef.current;
       pendingCommitRef.current = () => {
         onMoveClip(clip.id, moveTime, undefined);
-        // Move every companion clip in the multi-selection by the same
-        // delta. Cross-track moves of the primary don't take any
-        // companions along — that gets too lossy when they live on tracks
-        // of a different type — but same-track drags stay locked.
+        // Move every companion clip in the multi-selection by the same delta.
         if (companions.length > 0) {
           const deltaTime = moveTime - baseStartTime;
           for (const snap of companions) {
@@ -558,7 +561,7 @@ export const ClipComponent: React.FC<ClipComponentProps> = ({
       projectStore.endHistoryGroup();
     };
 
-    const handleMouseUp = () => {
+    const handleMouseUp = async () => {
       if (animationFrameId !== null) {
         cancelAnimationFrame(animationFrameId);
       }
@@ -574,9 +577,7 @@ export const ClipComponent: React.FC<ClipComponentProps> = ({
       pendingCommit?.();
 
       const { time, targetTrackId } = pendingDropRef.current;
-      if (targetTrackId) {
-        onMoveClip(clip.id, time, targetTrackId);
-      }
+      await onMoveClip(clip.id, time, targetTrackId ?? track.id);
 
       setIsDragging(false);
       setDragYOffset(0);
@@ -607,7 +608,6 @@ export const ClipComponent: React.FC<ClipComponentProps> = ({
     pixelsPerSecond,
     clip.id,
     track.id,
-    track.type,
     allTracks,
     trackHeights,
     timelineRef,
@@ -873,7 +873,16 @@ export const ClipComponent: React.FC<ClipComponentProps> = ({
       {isAudio &&
         (() => {
           const barCount = Math.max(8, Math.floor(width / 6));
-          const data = mediaItem?.waveformData;
+          const amplitudes = getClipWaveformBarAmplitudes(
+            mediaItem?.waveformData,
+            {
+              barCount,
+              mediaDuration: mediaItem?.metadata.duration ?? 0,
+              inPoint: clip.inPoint,
+              outPoint: clip.outPoint,
+              reversed: clip.reversed,
+            },
+          );
           return (
             <svg
               className="absolute left-0 bottom-0 w-full pointer-events-none"
@@ -881,12 +890,8 @@ export const ClipComponent: React.FC<ClipComponentProps> = ({
               preserveAspectRatio="none"
               viewBox={`0 0 ${barCount * 6 + 6} 28`}
             >
-              {Array.from({ length: barCount }).map((_, i) => {
-                const amp =
-                  data && data.length > 0
-                    ? Math.abs(data[Math.floor((i / barCount) * data.length)] ?? 0)
-                    : 0.35 + 0.5 * Math.abs(Math.sin(i * 1.3) * Math.cos(i * 0.7));
-                const h = Math.max(3, Math.min(24, amp * 26));
+              {amplitudes.map((amplitude, i) => {
+                const h = Math.min(24, amplitude * 26);
                 return (
                   <rect
                     key={i}

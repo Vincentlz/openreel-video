@@ -14,6 +14,7 @@ import {
   DEFAULT_VIDEO_SETTINGS,
   getAudioEngine,
   getExportEngine,
+  trackHasAudioItems,
   isMotionLayerContentVisible,
   MotionHighQualityRenderer,
   motionEngine,
@@ -475,10 +476,7 @@ async function encodeMotionSceneAudioToNativeBackend(
   if (timelineDuration <= 0) return;
 
   const hasAudio = project.timeline.tracks.some(
-    (track) =>
-      (track.type === "audio" || track.type === "video") &&
-      !track.muted &&
-      track.clips.length > 0,
+    (track) => !track.muted && trackHasAudioItems(project, track.id),
   );
   if (!hasAudio) return;
 

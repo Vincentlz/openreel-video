@@ -6,7 +6,10 @@ import { toCapabilityDoc } from "./registry";
  * Builds the agent system prompt: tool-usage guidance + the current editor state
  * + the capability reference, so the model can plan edits with valid values.
  */
-export function buildSystemPrompt(host: EditingHost): string {
+export function buildSystemPrompt(
+  host: EditingHost,
+  selectedToolNames?: Iterable<string>,
+): string {
   let state = "(no project open)";
   try {
     state = JSON.stringify(serializeEditorState(host.getProject()));
@@ -24,6 +27,8 @@ export function buildSystemPrompt(host: EditingHost): string {
     "- Use duplicate_track for timeline-backed video/image/audio tracks. For repeated Motion styling, use transfer_motion_effect_stack or transfer_motion_mask_stack so animated parameters, expressions, ordering, and independent ids are preserved across target layers.",
     "- Destructive/expensive tools (delete, remove, export, AI jobs) require user confirmation — explain what you're about to do.",
     "- After making the requested edits, stop and summarize what you changed.",
+    "- Write user-facing responses in concise GitHub-flavored Markdown. Prefer short paragraphs and bullets; use tables only when they improve clarity, and fence code or JSON when you need to show it.",
+    "- Do not expose internal chain-of-thought, tool schemas, or raw tool-result JSON. Summarize actions and errors in plain language.",
     "",
     "Motion Creator (After Effects-style motion graphics):",
     "- The motion model is compositions -> layers -> keyframes. A composition has its own size/duration/frameRate, a stack of layers, plus variables, markers, an optional camera, and lights.",
@@ -54,6 +59,6 @@ export function buildSystemPrompt(host: EditingHost): string {
     "",
     `Current editor state: ${state}`,
     "",
-    toCapabilityDoc(),
+    toCapabilityDoc(selectedToolNames),
   ].join("\n");
 }

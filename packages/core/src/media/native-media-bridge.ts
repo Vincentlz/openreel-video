@@ -11,14 +11,6 @@ export interface NativeMediaBridge {
     closeWrite(handleId: string): Promise<void>;
     readFileBytes(path: string): Promise<ArrayBuffer>;
   };
-  gpu?: {
-    uploadMedia(args: { srcPath: string; filename: string; contentType?: string }): Promise<{ mediaKey: string }>;
-    submitJob(args: { kind: string; params: Record<string, unknown>; mediaKey?: string; mediaFilename?: string }): Promise<{ jobID: string; status: string; manifestURL?: string }>;
-    jobStatus(jobID: string): Promise<{ jobID: string; status: string; progress?: number; message?: string; manifestURL?: string; error?: string; queuePosition?: number; pendingAhead?: number }>;
-    fetchManifest(jobID: string): Promise<Record<string, unknown>>;
-    downloadArtifact(jobID: string, relativePath: string): Promise<{ tempPath: string; mime: string }>;
-    cancelJob(jobID: string): Promise<{ jobID: string; status: string }>;
-  };
   media: {
     generateProxy(args: { srcPath: string; preset: "low" | "medium" | "high" }): Promise<{ outPath: string }>;
     transcode(args: {

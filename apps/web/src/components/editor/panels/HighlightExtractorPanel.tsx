@@ -8,12 +8,6 @@ import { useProjectStore } from "../../../stores/project-store";
 import { useTimelineStore } from "../../../stores/timeline-store";
 import { applyHighlightRanges } from "../../../services/highlight-apply";
 import {
-  getTranscriptionService,
-  initializeTranscriptionService,
-  type TranscriptWord,
-} from "@openreel/core";
-import { OPENREEL_TRANSCRIBE_URL } from "../../../config/api-endpoints";
-import {
   extractHighlights,
   type HighlightResult,
   type HighlightPreferences,
@@ -63,30 +57,8 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
     setHighlights([]);
 
     try {
-      setPhase("Transcribing audio...");
-      setProgress(5);
-
-      const transcriptionService = getTranscriptionService() || initializeTranscriptionService({
-        apiEndpoint: `${OPENREEL_TRANSCRIBE_URL}/transcribe`,
-      });
-      const subtitles = await transcriptionService.transcribeClip(
-        clip,
-        mediaItem,
-        (p) => setProgress(Math.round(p.progress * 20)),
-      );
-
-      const transcript: TranscriptWord[] = subtitles.flatMap((sub) =>
-        sub.words
-          ? sub.words.map((w) => ({ text: w.text, start: w.startTime, end: w.endTime }))
-          : [{ text: sub.text, start: sub.startTime, end: sub.endTime }],
-      );
-
-      if (transcript.length === 0) {
-        throw new Error("No transcript words found");
-      }
-
       setPhase("Decoding audio...");
-      setProgress(25);
+      setProgress(10);
 
       const arrayBuffer = await mediaItem.blob.arrayBuffer();
       const audioContext = new OfflineAudioContext(1, 44100, 44100);
@@ -94,11 +66,11 @@ export const HighlightExtractorPanel: React.FC<HighlightExtractorPanelProps> = (
 
       const results = await extractHighlights(
         audioBuffer,
-        transcript,
+        [],
         preferences,
         (phaseName, prog) => {
           setPhase(phaseName);
-          setProgress(25 + Math.round(prog * 0.75));
+          setProgress(Math.round(prog));
         },
       );
 

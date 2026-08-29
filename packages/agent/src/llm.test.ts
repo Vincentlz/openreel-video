@@ -3,6 +3,7 @@ import {
   buildAnthropicBody,
   parseAnthropicResponse,
   buildOpenAIBody,
+  makeClientFromSend,
   parseOpenAIResponse,
   AnthropicClient,
   OpenAIClient,
@@ -59,13 +60,17 @@ describe("Anthropic normalization", () => {
 
 describe("OpenAI normalization", () => {
   it("builds messages with tool_calls + tool role", () => {
-    const body = buildOpenAIBody({ system: "sys", messages: convo, tools: [] }, "gpt") as {
+    const body = buildOpenAIBody({ system: "sys", messages: convo, tools: [] }, "gpt", 2048) as {
       messages: Array<{ role: string; tool_calls?: unknown[]; tool_call_id?: string }>;
+      max_completion_tokens: number;
+      max_tokens?: number;
     };
     expect(body.messages[0].role).toBe("system");
     const assistant = body.messages.find((m) => m.role === "assistant");
     expect(assistant?.tool_calls).toBeTruthy();
     expect(body.messages.some((m) => m.role === "tool")).toBe(true);
+    expect(body.max_completion_tokens).toBe(2048);
+    expect(body.max_tokens).toBeUndefined();
   });
 
   it("parses tool_calls with JSON arguments", () => {
@@ -85,6 +90,94 @@ describe("OpenAI normalization", () => {
     expect(parsed.text).toBe("sure");
     expect(parsed.toolUses[0].input).toEqual({ clipId: "c1", speed: 2 });
     expect(parsed.stopReason).toBe("tool_use");
+  });
+
+  it("normalizes array content, object arguments, fallback ids, and alternate usage fields", () => {
+    const parsed = parseOpenAIResponse({
+      choices: [
+        {
+          message: {
+            content: [
+              { type: "text", text: "First " },
+              { type: "output_text", text: { value: "second" } },
+            ],
+            tool_calls: [
+              { function: { name: "list_clips", arguments: {} } },
+            ],
+          },
+          finish_reason: "stop",
+        },
+      ],
+      usage: { input_tokens: 12, output_tokens: 7 },
+    });
+
+    expect(parsed.text).toBe("First second");
+    expect(parsed.toolUses).toEqual([
+      { id: "compatible-tool-call-0", name: "list_clips", input: {} },
+    ]);
+    expect(parsed.stopReason).toBe("tool_use");
+    expect(parsed.usage).toEqual({ inputTokens: 12, outputTokens: 7 });
+  });
+
+  it("supports legacy function_call and double-encoded arguments", () => {
+    const parsed = parseOpenAIResponse({
+      choices: [
+        {
+          message: {
+            content: null,
+            function_call: {
+              name: "get_clip",
+              arguments: '"{\\"clipId\\":\\"c1\\"}"',
+            },
+          },
+          finish_reason: "function_call",
+        },
+      ],
+    });
+
+    expect(parsed.toolUses[0]).toEqual({
+      id: "legacy-function-call-0",
+      name: "get_clip",
+      input: { clipId: "c1" },
+    });
+  });
+
+  it("rejects malformed compatible responses with actionable errors", () => {
+    expect(() => parseOpenAIResponse({ choices: [] })).toThrow(/no assistant message/i);
+    expect(() =>
+      parseOpenAIResponse({
+        choices: [
+          {
+            message: {
+              tool_calls: [
+                { id: "bad", function: { name: "get_clip", arguments: "{" } },
+              ],
+            },
+          },
+        ],
+      }),
+    ).toThrow(/invalid JSON arguments.*get_clip/i);
+    expect(() =>
+      parseOpenAIResponse({ error: { message: "Model is unavailable" } }),
+    ).toThrow(/Model is unavailable/);
+  });
+
+  it("can omit OpenAI token-limit fields for compatible endpoints", async () => {
+    let sent: Record<string, unknown> | undefined;
+    const client = makeClientFromSend({
+      provider: "openai",
+      model: "compatible-model",
+      omitMaxTokens: true,
+      send: async (body) => {
+        sent = body as Record<string, unknown>;
+        return { choices: [{ message: { content: "ok" }, finish_reason: "stop" }] };
+      },
+    });
+
+    await client.complete({ messages: [{ role: "user", content: "hi" }], tools: [] });
+
+    expect(sent?.max_completion_tokens).toBeUndefined();
+    expect(sent?.max_tokens).toBeUndefined();
   });
 
   it("OpenAIClient round-trips through an injected transport", async () => {

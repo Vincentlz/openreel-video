@@ -8,6 +8,7 @@ import type {
   Marker,
   Effect,
   Clip,
+  Track,
   Keyframe,
   ChromaKeySettings,
   SpeedKeyframe,
@@ -127,6 +128,9 @@ export type TrackAction =
         position?: number;
         /** Pre-assigned track ID. When omitted, the executor generates one. */
         trackId?: string;
+        mode?: "standard";
+        role?: Track["role"];
+        name?: string;
       };
     }
   | {
@@ -136,6 +140,9 @@ export type TrackAction =
         position?: number;
         /** Pre-assigned ID enables deterministic history and collaboration. */
         trackId?: string;
+        /** Filled by the executor so redo recreates the same item IDs. */
+        itemIdMap?: Record<string, string>;
+        transitionIdMap?: Record<string, string>;
       };
     }
   | { type: "track/remove"; params: { trackId: string } }
@@ -155,6 +162,9 @@ export type ClipAction =
         mediaId: string;
         startTime: number;
         sourceClip?: Clip;
+        /** Pre-assigned ID keeps grouped placement deterministic on redo. */
+        clipId?: string;
+        duration?: number;
       };
     }
   | { type: "clip/remove"; params: { clipId: string } }
@@ -440,6 +450,20 @@ export type AdjustmentAction =
   | { type: "adjustment/setAll"; params: { layers: AdjustmentLayer[] } }
   | { type: "mask/setAll"; params: { masks: Mask[] } }
   | { type: "multicam/setAll"; params: { groups: MultiCamGroup[] } }
+  | {
+      type: "multicam/applyEdit";
+      params: {
+        outputTrack?: import("./timeline").Track;
+        outputTracks?: import("./timeline").Track[];
+        outputTrackPosition?: number;
+        sourceTrackIds: string[];
+        groups: MultiCamGroup[];
+      };
+    }
+  | {
+      type: "multicam/restoreEdit";
+      params: Record<string, unknown>;
+    }
   | {
       type: "nested/setAll";
       params: {

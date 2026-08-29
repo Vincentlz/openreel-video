@@ -7,7 +7,6 @@ import {
   StarOff,
   ChevronDown,
   Loader2,
-  User,
   Settings,
 } from "@/icons/lucide-compat";
 import { ToolcraftButton as Button } from "@openreel/ui";
@@ -15,13 +14,10 @@ import { ToolcraftIconButton as IconButton } from "@openreel/ui";
 import { ToolcraftSelectableCard as SelectableCard } from "@openreel/ui";
 import { ToolcraftText as Text } from "@openreel/ui";
 import { ToolcraftTextInputControl } from "@openreel/ui";
-import type { TtsProvider } from "../../../stores/settings-store";
 import { useSettingsStore } from "../../../stores/settings-store";
 import type { ElevenLabsVoice } from "./tts-types";
-import { PIPER_VOICES } from "./tts-constants";
 
 interface VoiceBrowserProps {
-  provider: TtsProvider;
   selectedVoice: string;
   onSelectVoice: (voiceId: string) => void;
   allVoices: ElevenLabsVoice[];
@@ -29,7 +25,6 @@ interface VoiceBrowserProps {
 }
 
 export const VoiceBrowser: React.FC<VoiceBrowserProps> = ({
-  provider,
   selectedVoice,
   onSelectVoice,
   allVoices,
@@ -115,38 +110,6 @@ export const VoiceBrowser: React.FC<VoiceBrowserProps> = ({
       );
     });
   }, [allVoices, voiceSearch]);
-
-  if (provider === "piper") {
-    return (
-      <div className="space-y-2">
-        <Text type="label" color="secondary" weight="medium" className="text-[10px] text-fg-2">
-          Voice
-        </Text>
-        <div className="flex flex-wrap gap-1.5">
-          {PIPER_VOICES.map((voice) => (
-            <SelectableCard
-              key={voice.id}
-              label={voice.name}
-              isSelected={selectedVoice === voice.id}
-              onChange={() => onSelectVoice(voice.id)}
-              onClick={() => onSelectVoice(voice.id)}
-              padding={2}
-              variant={selectedVoice === voice.id ? "green" : "muted"}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] transition-colors ${
-                selectedVoice === voice.id
-                  ? "bg-primary text-white font-medium"
-                  : "bg-bg-2 text-fg-2 hover:text-fg border border-border"
-              }`}
-            >
-              <User size={10} />
-              <span>{voice.name}</span>
-              <span className="text-[8px] opacity-70">{voice.gender === "female" ? "F" : "M"}</span>
-            </SelectableCard>
-          ))}
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-2">

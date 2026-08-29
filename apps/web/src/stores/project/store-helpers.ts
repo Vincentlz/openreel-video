@@ -14,6 +14,7 @@ import {
   getAdjustmentLayerEngine,
   multicamEngine,
   getNestedSequenceEngine,
+  withUniversalTracksCapability,
 } from "@openreel/core";
 import type { ProjectState } from "../project-store";
 import type { ClipHistoryEntryType } from "./index";
@@ -34,7 +35,7 @@ export interface ProjectStoreHelpers {
   recordOverlayCreate(
     prefix: string,
     field: OverlayField,
-    clip: { id: string },
+    clip: { id: string; trackId: string },
   ): void;
   recordOverlayUpdate(
     prefix: string,
@@ -97,7 +98,7 @@ export function createProjectStoreHelpers(
   const recordOverlayCreate = (
     prefix: string,
     field: OverlayField,
-    clip: { id: string },
+    clip: { id: string; trackId: string },
   ): void => {
     const { project, actionExecutor } = get();
     const actionId = uuidv4();
@@ -114,11 +115,19 @@ export function createProjectStoreHelpers(
       timestamp: Date.now(),
       params: { clipId: clip.id },
     };
-    const nextProject = {
+    const rawNextProject = {
       ...project,
       [field]: [...overlayList(project, field), snap],
       modifiedAt: Date.now(),
     } as Project;
+    const ownerTrack = project.timeline.tracks.find(
+      (track) => track.id === clip.trackId,
+    );
+    const expectedTrackType = prefix === "text" ? "text" : "graphics";
+    const nextProject =
+      ownerTrack?.mode === "standard" || ownerTrack?.type !== expectedTrackType
+        ? withUniversalTracksCapability(rawNextProject)
+        : rawNextProject;
     set({
       project: {
         ...nextProject,

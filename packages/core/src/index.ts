@@ -18,6 +18,7 @@ export * from "./ai";
 export * from "./animation";
 export * from "./effects";
 export * from "./device";
+export * from "./multicam";
 export {
   ExportEngine,
   getExportEngine,
@@ -36,6 +37,11 @@ export {
   WebCodecsBackend,
   type WebCodecsBackendOptions,
 } from "./export/webcodecs-backend";
+
+export {
+  resolveWebCodecsExportLimits,
+  type WebCodecsExportAdjustment,
+} from "./export/webcodecs-limits";
 
 export type {
   VideoExportSettings,

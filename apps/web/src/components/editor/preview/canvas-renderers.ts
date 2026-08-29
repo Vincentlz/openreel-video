@@ -14,6 +14,8 @@ import {
   type EmphasisAnimation,
   isNeutralColorGrading,
   type TransitionEdge,
+  resolveCanvasFitDimensions,
+  type Clip,
 } from "@openreel/core";
 import * as THREE from "three";
 
@@ -1719,38 +1721,17 @@ export const drawFrameWithTransform = (
     sourceHeight = "height" in frame ? frame.height : canvasHeight;
   }
 
-  const sourceAspect = sourceWidth / sourceHeight;
-  const canvasAspect = canvasWidth / canvasHeight;
-  // Treat a missing or "none" fit as "contain" so clips preserve their
-  // aspect ratio (letterboxed) instead of being drawn at raw native pixels.
-  // Keeps the playing render consistent with the paused/scrub render, which
-  // always letterboxes.
-  const fitMode =
-    !t.fitMode || t.fitMode === "none" ? "contain" : t.fitMode;
-
-  let drawWidth: number;
-  let drawHeight: number;
-
-  if (fitMode === "stretch") {
-    drawWidth = canvasWidth;
-    drawHeight = canvasHeight;
-  } else if (fitMode === "cover") {
-    if (sourceAspect > canvasAspect) {
-      drawHeight = canvasHeight;
-      drawWidth = canvasHeight * sourceAspect;
-    } else {
-      drawWidth = canvasWidth;
-      drawHeight = canvasWidth / sourceAspect;
-    }
-  } else {
-    if (sourceAspect > canvasAspect) {
-      drawWidth = canvasWidth;
-      drawHeight = canvasWidth / sourceAspect;
-    } else {
-      drawHeight = canvasHeight;
-      drawWidth = canvasHeight * sourceAspect;
-    }
-  }
+  const crop = t.crop;
+  const visibleSourceWidth = crop ? crop.width * sourceWidth : sourceWidth;
+  const visibleSourceHeight = crop ? crop.height * sourceHeight : sourceHeight;
+  const { width: drawWidth, height: drawHeight } =
+    resolveCanvasFitDimensions(
+      t.fitMode,
+      visibleSourceWidth,
+      visibleSourceHeight,
+      canvasWidth,
+      canvasHeight,
+    );
 
   const drawX = -drawWidth * t.anchor.x;
   const drawY = -drawHeight * t.anchor.y;
@@ -1763,37 +1744,20 @@ export const drawFrameWithTransform = (
     ctx.clip();
   }
 
-  if (t.crop) {
-    const sx = t.crop.x * sourceWidth;
-    const sy = t.crop.y * sourceHeight;
-    const sWidth = t.crop.width * sourceWidth;
-    const sHeight = t.crop.height * sourceHeight;
-
-    const croppedAspect = sWidth / sHeight;
-    let cropDrawWidth: number;
-    let cropDrawHeight: number;
-
-    if (croppedAspect > canvasAspect) {
-      cropDrawWidth = canvasWidth;
-      cropDrawHeight = canvasWidth / croppedAspect;
-    } else {
-      cropDrawHeight = canvasHeight;
-      cropDrawWidth = canvasHeight * croppedAspect;
-    }
-
-    const cropDrawX = -cropDrawWidth * t.anchor.x;
-    const cropDrawY = -cropDrawHeight * t.anchor.y;
+  if (crop) {
+    const sx = crop.x * sourceWidth;
+    const sy = crop.y * sourceHeight;
 
     ctx.drawImage(
       frame,
       sx,
       sy,
-      sWidth,
-      sHeight,
-      cropDrawX,
-      cropDrawY,
-      cropDrawWidth,
-      cropDrawHeight,
+      visibleSourceWidth,
+      visibleSourceHeight,
+      drawX,
+      drawY,
+      drawWidth,
+      drawHeight,
     );
   } else {
     ctx.drawImage(frame, drawX, drawY, drawWidth, drawHeight);
@@ -1979,14 +1943,9 @@ export const getTransitionAtTime = (
   tracks: Array<{
     id: string;
     type: string;
-    clips: Array<{
-      id: string;
-      startTime: number;
-      duration: number;
-      mediaId: string;
-      inPoint?: number;
-    }>;
+    clips: Clip[];
   }>,
+  isEligibleClip: (clip: Clip) => boolean = () => true,
 ): TransitionRenderInfo | null => {
   try {
     const transitionBridge = getTransitionBridge();
@@ -1994,11 +1953,7 @@ export const getTransitionAtTime = (
       return null;
     }
 
-    const videoTracks = tracks.filter(
-      (t) => t.type === "video" || t.type === "image",
-    );
-
-    for (const track of videoTracks) {
+    for (const track of tracks) {
       const transitions = transitionBridge.getTransitionsForTrack(track.id);
 
       for (const transition of transitions) {
@@ -2007,7 +1962,13 @@ export const getTransitionAtTime = (
           ? track.clips.find((c) => c.id === transition.clipBId)
           : undefined;
 
-        if (!clipA || (transition.clipBId && !clipB)) continue;
+        if (
+          !clipA ||
+          !isEligibleClip(clipA) ||
+          (transition.clipBId && (!clipB || !isEligibleClip(clipB)))
+        ) {
+          continue;
+        }
 
         if (
           transitionBridge.isTimeInTransition(

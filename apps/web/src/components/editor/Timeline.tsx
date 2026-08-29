@@ -11,11 +11,8 @@ import {
   Layers,
   Maximize2,
   Minimize2,
-  Film,
   Music,
-  Image,
   Type,
-  Shapes,
   Scissors,
   Copy,
   Delete,
@@ -52,6 +49,7 @@ import { useUIStore } from "../../stores/ui-store";
 import { toast } from "../../stores/notification-store";
 import { useEngineStore } from "../../stores/engine-store";
 import { getPlaybackBridge } from "../../bridges/playback-bridge";
+import { trackHasAudioItems, trackHasVisualItems } from "@openreel/core";
 import {
   deleteTimelineItem,
   duplicateTimelineItem,
@@ -737,42 +735,37 @@ export const Timeline: React.FC = () => {
 
   const handleDropMedia = useCallback(
     async (trackId: string, mediaId: string, startTime: number) => {
-      const { addClip, addClipToNewTrack } = useProjectStore.getState();
-      if (trackId) {
-        await addClip(trackId, mediaId, startTime);
-      } else {
-        await addClipToNewTrack(mediaId, startTime);
-      }
+      await useProjectStore
+        .getState()
+        .placeMediaClip(mediaId, trackId || undefined, startTime);
     },
     [],
   );
 
-  const { moveClip } = useProjectStore();
   const handleMoveClip = useCallback(
     async (clipId: string, newStartTime: number, targetTrackId?: string) => {
       const store = useProjectStore.getState();
-      const isGraphic = Boolean(
-        store.getShapeClip(clipId) ||
+      const sourceClip = store.getClip(clipId);
+      const isOverlay = Boolean(
+        store.getTextClip(clipId) ||
+          store.getShapeClip(clipId) ||
           store.getSVGClip(clipId) ||
           store.getStickerClip(clipId),
       );
-      if (isGraphic) {
-        store.updateOverlayClipTiming(clipId, {
-          startTime: newStartTime,
-        });
-      } else {
-        const sourceClip = store.getClip(clipId);
-        const result = await moveClip(clipId, newStartTime, targetTrackId);
-        if (result.success && sourceClip) {
-          moveLinkedCaptions(
-            useProjectStore.getState(),
-            sourceClip,
-            newStartTime,
-          );
-        }
+      const result = targetTrackId
+        ? await store.moveTimelineItem(clipId, newStartTime, targetTrackId)
+        : isOverlay
+          ? store.updateOverlayClipTiming(clipId, {
+              startTime: newStartTime,
+            })
+            ? { success: true as const }
+            : { success: false as const }
+          : await store.moveClip(clipId, newStartTime);
+      if (result.success && sourceClip) {
+        moveLinkedCaptions(useProjectStore.getState(), sourceClip, newStartTime);
       }
     },
-    [moveClip],
+    [],
   );
 
   const [snapIndicatorTime, setSnapIndicatorTime] = React.useState<
@@ -801,12 +794,10 @@ export const Timeline: React.FC = () => {
   );
 
   const handleMoveTextClip = useCallback(
-    (clipId: string, newStartTime: number) => {
-      useProjectStore.getState().updateOverlayClipTiming(clipId, {
-        startTime: Math.max(0, newStartTime),
-      });
+    async (clipId: string, newStartTime: number, targetTrackId?: string) => {
+      await handleMoveClip(clipId, Math.max(0, newStartTime), targetTrackId);
     },
-    [],
+    [handleMoveClip],
   );
 
   const handleTrimShapeClip = useCallback(
@@ -894,30 +885,39 @@ export const Timeline: React.FC = () => {
   const addTrackItems: DropdownMenuOption[] = useMemo(
     () => [
       {
-        label: "Video Track",
-        icon: <Film size={16} className="text-clip-video" aria-hidden />,
-        onClick: () => addTrack("video"),
+        label: "Track",
+        icon: <Layers size={16} className="text-foreground" aria-hidden />,
+        onClick: () => addTrack("video", undefined, { mode: "standard" }),
       },
       {
-        label: "Audio Track",
+        label: "Dialogue",
         icon: <Music size={16} className="text-clip-audio" aria-hidden />,
-        onClick: () => addTrack("audio"),
+        onClick: () =>
+          addTrack("video", undefined, {
+            mode: "standard",
+            role: "dialogue",
+            name: "Dialogue",
+          }),
       },
-      { type: "divider" },
       {
-        label: "Image Track",
-        icon: <Image size={16} className="text-clip-music" aria-hidden />,
-        onClick: () => addTrack("image"),
+        label: "Music",
+        icon: <Music size={16} className="text-clip-audio" aria-hidden />,
+        onClick: () =>
+          addTrack("video", undefined, {
+            mode: "standard",
+            role: "music",
+            name: "Music",
+          }),
       },
       {
-        label: "Text Track",
+        label: "Captions",
         icon: <Type size={16} className="text-clip-text" aria-hidden />,
-        onClick: () => addTrack("text"),
-      },
-      {
-        label: "Graphics Track",
-        icon: <Shapes size={16} className="text-clip-music" aria-hidden />,
-        onClick: () => addTrack("graphics"),
+        onClick: () =>
+          addTrack("video", undefined, {
+            mode: "standard",
+            role: "captions",
+            name: "Captions",
+          }),
       },
     ],
     [addTrack],
@@ -1140,11 +1140,8 @@ export const Timeline: React.FC = () => {
                     {filteredTrackEntries.map(({ track, index }) => {
                       const info = getTrackInfo(track, index);
                       const name = track.name || info.label;
-                      const isVisual =
-                        track.type === "video" ||
-                        track.type === "image" ||
-                        track.type === "text" ||
-                        track.type === "graphics";
+                      const isVisual = trackHasVisualItems(project, track.id);
+                      const isAudio = trackHasAudioItems(project, track.id);
                       return (
                         <div
                           key={track.id}
@@ -1191,16 +1188,13 @@ export const Timeline: React.FC = () => {
                               variant="ghost"
                               onClick={() => startTrackRename(track.id, name)}
                             />
-                            {track.type !== "text" &&
-                            track.type !== "graphics" ? (
-                              <IconButton
-                                label={`Duplicate ${name}`}
-                                icon={<Copy size={12} aria-hidden />}
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => void duplicateTrack(track.id)}
-                              />
-                            ) : null}
+                            <IconButton
+                              label={`Duplicate ${name}`}
+                              icon={<Copy size={12} aria-hidden />}
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => void duplicateTrack(track.id)}
+                            />
                             <IconButton
                               label={`Delete ${name}`}
                               icon={<Trash2 size={12} aria-hidden />}
@@ -1224,7 +1218,7 @@ export const Timeline: React.FC = () => {
                                 onClick={() => void hideTrack(track.id, !track.hidden)}
                               />
                             ) : null}
-                            {track.type === "audio" ? (
+                            {isAudio ? (
                               <>
                                 <IconButton
                                   label={`Mute ${name}`}
@@ -1497,7 +1491,9 @@ export const Timeline: React.FC = () => {
               })}
               <button
                 type="button"
-                onClick={() => addTrack("video")}
+                onClick={() =>
+                  addTrack("video", undefined, { mode: "standard" })
+                }
                 className="mx-3 my-1 h-7 flex items-center justify-center gap-1.5 rounded-[7px] border border-dashed border-border-strong text-fg-muted hover:text-fg-2 hover:border-fg-3 transition-colors"
                 aria-label="Add track"
               >
@@ -1590,7 +1586,7 @@ export const Timeline: React.FC = () => {
 
               // External OS file drop (e.g. from Windows Explorer)
               if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                const { importMedia, addClipToNewTrack } = useProjectStore.getState();
+                const { importMedia, placeMediaClip } = useProjectStore.getState();
                 for (const file of Array.from(e.dataTransfer.files)) {
                   try {
                     const beforeIds = new Set(
@@ -1602,7 +1598,7 @@ export const Timeline: React.FC = () => {
                         .getState()
                         .project.mediaLibrary.items.find(i => !beforeIds.has(i.id));
                       if (newItem) {
-                        await addClipToNewTrack(newItem.id, snappedTime);
+                        await placeMediaClip(newItem.id, undefined, snappedTime);
                         const track = useProjectStore
                           .getState()
                           .project.timeline.tracks.find(t =>
@@ -1651,13 +1647,7 @@ export const Timeline: React.FC = () => {
                   onDropMedia={handleDropMedia}
                   onMoveClip={handleMoveClip}
                   onSnapIndicator={handleSnapIndicator}
-                  onTrimClip={
-                    track.type === "video" ||
-                    track.type === "image" ||
-                    track.type === "audio"
-                      ? handleTrimClip
-                      : undefined
-                  }
+                  onTrimClip={handleTrimClip}
                   onTrimTextClip={handleTrimTextClip}
                   onMoveTextClip={handleMoveTextClip}
                   onTrimShapeClip={handleTrimShapeClip}

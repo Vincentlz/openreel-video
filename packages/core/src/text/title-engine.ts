@@ -215,6 +215,7 @@ export class TitleEngine {
     width: number,
     height: number,
     time: number = 0,
+    contentScale: { x: number; y: number } = { x: 1, y: 1 },
   ): TextRenderResult {
     let canvas: HTMLCanvasElement | OffscreenCanvas;
     let ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
@@ -274,7 +275,10 @@ export class TitleEngine {
 
     ctx.translate(posX, posY);
     ctx.rotate((transform.rotation * Math.PI) / 180);
-    ctx.scale(transform.scale.x, transform.scale.y);
+    ctx.scale(
+      transform.scale.x * contentScale.x,
+      transform.scale.y * contentScale.y,
+    );
     ctx.globalAlpha = opacity;
 
     this.applyTextStyle(ctx, style);

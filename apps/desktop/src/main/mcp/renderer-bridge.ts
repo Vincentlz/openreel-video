@@ -12,21 +12,15 @@ let responseListener: ((event: unknown, response: BridgeResponse) => void) | nul
   null;
 
 /**
- * Tools that render/encode/upload or run a remote job legitimately take far
- * longer than a normal editing call. They get a generous timeout so long
- * exports aren't killed by the default bridge limit.
+ * Local tools that render or encode legitimately take far longer than a normal
+ * editing call. They get a generous timeout so long exports aren't killed by
+ * the default bridge limit.
  */
 const LONG_RUNNING_TOOLS = new Set<string>([
   "export_video",
   "export_audio",
   "render_motion_frame",
   "render_creation_preview",
-  "transcribe",
-  "detect_highlights",
-  "remove_background",
-  "upscale",
-  "generate_music",
-  "inpaint",
   "sync_motion_to_audio",
 ]);
 const LONG_RUNNING_TIMEOUT_MS = 30 * 60_000;

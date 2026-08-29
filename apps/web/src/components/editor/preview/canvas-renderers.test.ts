@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  drawFrameWithTransform,
   getAnimatedTransform,
   renderTextClipToCanvas,
 } from "./canvas-renderers";
@@ -93,6 +94,105 @@ describe("Transform Coordinate System", () => {
       const transform = { ...DEFAULT_TRANSFORM, position: { x: -100, y: 0 } };
       expect(transform.position.x).toBe(-100);
     });
+  });
+});
+
+describe("drawFrameWithTransform crop fitting", () => {
+  const createContext = () =>
+    ({
+      save: vi.fn(),
+      restore: vi.fn(),
+      translate: vi.fn(),
+      rotate: vi.fn(),
+      scale: vi.fn(),
+      drawImage: vi.fn(),
+      beginPath: vi.fn(),
+      roundRect: vi.fn(),
+      clip: vi.fn(),
+      globalAlpha: 1,
+      filter: "none",
+    }) as unknown as CanvasRenderingContext2D;
+
+  const croppedTransform: ClipTransform = {
+    ...DEFAULT_TRANSFORM,
+    crop: { x: 0.25, y: 0, width: 0.5, height: 1 },
+  };
+
+  it("honors cover using the cropped source aspect ratio", () => {
+    const context = createContext();
+    const frame = document.createElement("canvas");
+    frame.width = 1920;
+    frame.height = 1080;
+
+    drawFrameWithTransform(
+      context,
+      frame,
+      { ...croppedTransform, fitMode: "cover" },
+      1080,
+      1920,
+    );
+
+    const args = vi.mocked(context.drawImage).mock.calls[0];
+    expect(args.slice(0, 5)).toEqual([frame, 480, 0, 960, 1080]);
+    expect(args[5]).toBeCloseTo(-853.333, 3);
+    expect(args[6]).toBe(-960);
+    expect(args[7]).toBeCloseTo(1706.667, 3);
+    expect(args[8]).toBe(1920);
+  });
+
+  it("honors stretch after cropping", () => {
+    const context = createContext();
+    const frame = document.createElement("canvas");
+    frame.width = 1920;
+    frame.height = 1080;
+
+    drawFrameWithTransform(
+      context,
+      frame,
+      { ...croppedTransform, fitMode: "stretch" },
+      1080,
+      1920,
+    );
+
+    expect(vi.mocked(context.drawImage)).toHaveBeenCalledWith(
+      frame,
+      480,
+      0,
+      960,
+      1080,
+      -540,
+      -960,
+      1080,
+      1920,
+    );
+  });
+
+  it("keeps lower layers visible around a scaled contained video frame", () => {
+    const context = createContext();
+    const videoFrame = document.createElement("canvas");
+    videoFrame.width = 640;
+    videoFrame.height = 480;
+
+    drawFrameWithTransform(
+      context,
+      videoFrame,
+      {
+        ...DEFAULT_TRANSFORM,
+        scale: { x: 0.6, y: 0.6 },
+        fitMode: "contain",
+      },
+      1920,
+      1080,
+    );
+
+    expect(vi.mocked(context.scale)).toHaveBeenCalledWith(0.6, 0.6);
+    expect(vi.mocked(context.drawImage)).toHaveBeenCalledWith(
+      videoFrame,
+      -720,
+      -540,
+      1440,
+      1080,
+    );
   });
 });
 

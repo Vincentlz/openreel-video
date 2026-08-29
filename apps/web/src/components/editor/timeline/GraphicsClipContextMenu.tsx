@@ -42,8 +42,8 @@ export function useGraphicsClipContextMenuItems({
     (project.timeline.tracks.some(
       (track) =>
         track.id === clip.trackId &&
-        track.type === "text" &&
-        track.name.trim().toLowerCase() === "captions",
+        (track.role === "captions" ||
+          track.name.trim().toLowerCase() === "captions"),
     ) ||
       ("metadata" in clip &&
         typeof clip.metadata?.captionSource === "string"));
@@ -77,7 +77,7 @@ export function useGraphicsClipContextMenuItems({
   };
 
   const handleSelectTrackClips = () => {
-    const project = useProjectStore.getState().project;
+    const project = useProjectStore.getState().getFullProject();
     selectMultiple(getTimelineTrackSelection(project, clip.trackId));
     onClose?.();
   };

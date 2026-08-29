@@ -833,6 +833,169 @@ describe("ProjectStore", () => {
     });
   });
 
+  describe("universal timeline placement", () => {
+    const mixedPlacementProject = (): Project =>
+      ({
+        id: "mixed-placement",
+        name: "Mixed placement",
+        createdAt: 0,
+        modifiedAt: 0,
+        settings: {
+          width: 1920,
+          height: 1080,
+          frameRate: 30,
+          sampleRate: 48_000,
+          channels: 2,
+        },
+        mediaLibrary: {
+          items: [
+            {
+              id: "video-media",
+              name: "Video",
+              type: "video",
+              fileHandle: null,
+              blob: null,
+              metadata: {
+                duration: 5,
+                width: 1920,
+                height: 1080,
+                frameRate: 30,
+                codec: "h264",
+                sampleRate: 48_000,
+                channels: 2,
+                fileSize: 1,
+              },
+              thumbnailUrl: null,
+              waveformData: null,
+            },
+            {
+              id: "image-media",
+              name: "Image",
+              type: "image",
+              fileHandle: null,
+              blob: null,
+              metadata: {
+                duration: 0,
+                width: 1280,
+                height: 720,
+                frameRate: 0,
+                codec: "png",
+                sampleRate: 0,
+                channels: 0,
+                fileSize: 1,
+              },
+              thumbnailUrl: null,
+              waveformData: null,
+            },
+          ],
+        },
+        timeline: {
+          duration: 5,
+          subtitles: [],
+          markers: [],
+          tracks: [
+            {
+              id: "target",
+              type: "video",
+              name: "Track 1",
+              clips: [
+                {
+                  id: "existing",
+                  mediaId: "video-media",
+                  trackId: "target",
+                  startTime: 0,
+                  duration: 5,
+                  inPoint: 0,
+                  outPoint: 5,
+                  effects: [],
+                  audioEffects: [],
+                  keyframes: [],
+                  transform: {},
+                  volume: 1,
+                },
+              ],
+              transitions: [],
+              locked: false,
+              hidden: false,
+              muted: false,
+              solo: false,
+            },
+          ],
+        },
+      }) as unknown as Project;
+
+    it("auto-stacks an occupied drop and undoes the clip and row together", async () => {
+      useProjectStore.getState().loadProject(mixedPlacementProject());
+
+      const result = await useProjectStore
+        .getState()
+        .placeMediaClip("image-media", "target", 1);
+
+      expect(result.success).toBe(true);
+      let project = useProjectStore.getState().project;
+      expect(project.timeline.tracks).toHaveLength(2);
+      expect(project.timeline.tracks[0].mode).toBe("standard");
+      expect(project.timeline.tracks[0].clips[0]?.mediaId).toBe("image-media");
+      expect(project.capabilities).toContain("universal-tracks-v1");
+
+      await useProjectStore.getState().undo();
+      project = useProjectStore.getState().project;
+      expect(project.timeline.tracks).toHaveLength(1);
+      expect(project.timeline.tracks[0].id).toBe("target");
+      expect(project.timeline.tracks[0].clips.map((clip) => clip.id)).toEqual([
+        "existing",
+      ]);
+    });
+
+    it("moves a text item onto any unlocked row and restores it on undo", async () => {
+      const project = {
+        ...mixedPlacementProject(),
+        timeline: {
+          ...mixedPlacementProject().timeline,
+          tracks: [
+            ...mixedPlacementProject().timeline.tracks,
+            {
+              id: "destination",
+              type: "audio" as const,
+              name: "Destination",
+              clips: [],
+              transitions: [],
+              locked: false,
+              hidden: false,
+              muted: false,
+              solo: false,
+            },
+          ],
+        },
+        textClips: [
+          {
+            id: "title",
+            trackId: "target",
+            startTime: 0,
+            duration: 1,
+            text: "Title",
+          },
+        ],
+      } as unknown as Project;
+      useProjectStore.getState().loadProject(project);
+
+      const result = await useProjectStore
+        .getState()
+        .moveTimelineItem("title", 2, "destination");
+      expect(result.success).toBe(true);
+      expect(useProjectStore.getState().project.textClips?.[0]).toMatchObject({
+        trackId: "destination",
+        startTime: 2,
+      });
+
+      await useProjectStore.getState().undo();
+      expect(useProjectStore.getState().project.textClips?.[0]).toMatchObject({
+        trackId: "target",
+        startTime: 0,
+      });
+    });
+  });
+
   describe("video effects", () => {
     const createProjectWithVideoClip = (): Project => ({
       id: "effects-project",
@@ -1765,14 +1928,29 @@ describe("ProjectStore", () => {
         startTime: 10,
         trackId: textTrack.id,
       });
-      expect(useProjectStore.getState().getShapeClip(pastedIds[1])).toMatchObject({
+      const pastedShape = useProjectStore
+        .getState()
+        .getShapeClip(pastedIds[1]);
+      expect(pastedShape).toMatchObject({
         startTime: 12,
-        trackId: graphicsTrack.id,
       });
+      expect(pastedShape?.trackId).not.toBe(textTrack.id);
+      const stackedTrack = useProjectStore
+        .getState()
+        .project.timeline.tracks.find((track) => track.id === pastedShape?.trackId);
+      expect(stackedTrack?.mode).toBe("standard");
+      expect(
+        useProjectStore.getState().project.timeline.tracks.indexOf(stackedTrack!),
+      ).toBeLessThan(
+        useProjectStore.getState().project.timeline.tracks.findIndex(
+          (track) => track.id === textTrack.id,
+        ),
+      );
 
       await useProjectStore.getState().undo();
       expect(useProjectStore.getState().project.textClips).toHaveLength(1);
       expect(useProjectStore.getState().project.shapeClips).toHaveLength(1);
+      expect(useProjectStore.getState().project.timeline.tracks).toHaveLength(2);
     });
   });
 
@@ -1864,6 +2042,44 @@ describe("ProjectStore", () => {
       expect(audioTracks.length).toBe(1);
       expect(audioTracks[0].clips.length).toBe(1);
       expect(audioTracks[0].clips[0].mediaId).toBe("video-media-1");
+    });
+
+    it("should preserve the video clip source range in separated audio", async () => {
+      const project = createProjectWithVideoClip(1);
+      const videoTrack = project.timeline.tracks[0];
+      const trimmedVideoClip = {
+        ...videoTrack.clips[0],
+        startTime: 4,
+        duration: 3,
+        inPoint: 2,
+        outPoint: 5,
+        speed: 1.5,
+        reversed: true,
+      };
+      const trimmedProject = {
+        ...project,
+        timeline: {
+          ...project.timeline,
+          tracks: [{ ...videoTrack, clips: [trimmedVideoClip] }],
+        },
+      };
+
+      useProjectStore.getState().loadProject(trimmedProject);
+      const result = await useProjectStore.getState().separateAudio("video-clip-1");
+
+      expect(result.success).toBe(true);
+      const audioClip = useProjectStore
+        .getState()
+        .project.timeline.tracks.find((track) => track.type === "audio")
+        ?.clips[0];
+      expect(audioClip).toMatchObject({
+        startTime: 4,
+        duration: 3,
+        inPoint: 2,
+        outPoint: 5,
+        speed: 1.5,
+        reversed: true,
+      });
     });
 
     it("should create multiple audio clips when media has multiple audio tracks", async () => {
@@ -2040,7 +2256,7 @@ Second caption`;
 
     const state = useProjectStore.getState();
     const captionsTrack = state.project.timeline.tracks.find(
-      (track) => track.type === "text" && track.name === "Captions",
+      (track) => track.role === "captions" && track.name === "Captions",
     );
     expect(captionsTrack).toBeDefined();
 
@@ -2074,7 +2290,7 @@ Ignored block`;
 
     const state = useProjectStore.getState();
     const captionsTrack = state.project.timeline.tracks.find(
-      (track) => track.type === "text" && track.name === "Captions",
+      (track) => track.role === "captions" && track.name === "Captions",
     );
     const captionClips = state
       .getAllTextClips()

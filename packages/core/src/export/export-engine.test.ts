@@ -181,7 +181,29 @@ const createMockProject = (overrides?: Partial<Project>): Project => ({
     channels: 2,
   },
   mediaLibrary: {
-    items: [],
+    items: [
+      {
+        id: "media-1",
+        name: "Mock video",
+        type: "video",
+        fileHandle: null,
+        blob: null,
+        metadata: {
+          duration: 40,
+          width: 1920,
+          height: 1080,
+          frameRate: 30,
+          codec: "h264",
+          sampleRate: 48_000,
+          channels: 2,
+          fileSize: 0,
+          hasVideo: true,
+          hasAudio: true,
+        },
+        thumbnailUrl: null,
+        waveformData: null,
+      },
+    ],
   },
   timeline: {
     tracks: [],

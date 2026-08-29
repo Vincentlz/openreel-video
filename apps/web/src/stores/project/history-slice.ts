@@ -6,6 +6,7 @@ import type {
   SVGClip,
   StickerClip,
 } from "@openreel/core";
+import { getTrackItems } from "@openreel/core";
 import type { ProjectState } from "../project-store";
 import type { ProjectStoreHelpers } from "./store-helpers";
 import type {
@@ -197,23 +198,7 @@ export function createHistorySlice(
           );
 
           if (track) {
-            let trackHasClips = false;
-            if (track.type === "text") {
-              const textClips =
-                useEngineStore.getState().getTitleEngine()?.getAllTextClips() ||
-                [];
-              trackHasClips = textClips.some((c) => c.trackId === trackId);
-            } else if (track.type === "graphics") {
-              const graphicsEngine = useEngineStore.getState().getGraphicsEngine();
-              const shapeClips = graphicsEngine?.getAllShapeClips() || [];
-              const svgClips = graphicsEngine?.getAllSVGClips() || [];
-              const stickerClips = graphicsEngine?.getAllStickerClips() || [];
-              trackHasClips = [...shapeClips, ...svgClips, ...stickerClips].some(
-                (c) => c.trackId === trackId,
-              );
-            } else {
-              trackHasClips = track.clips.length > 0;
-            }
+            const trackHasClips = getTrackItems(get().project, trackId).length > 0;
 
             if (!trackHasClips) {
               const lastEntry = get().actionHistory.peekUndo();
@@ -230,11 +215,15 @@ export function createHistorySlice(
               const actionTrackType = lastAction?.params?.trackType as
                 | string
                 | undefined;
+              const actionTrackId = lastAction?.params?.trackId as
+                | string
+                | undefined;
 
               if (
                 lastAction &&
                 lastAction.type === "track/add" &&
-                actionTrackType === expectedTrackType
+                (actionTrackId === trackId ||
+                  (!actionTrackId && actionTrackType === expectedTrackType))
               ) {
                 const trackUndoResult = await actionExecutor.undo(get().project);
                 if (trackUndoResult.success) {

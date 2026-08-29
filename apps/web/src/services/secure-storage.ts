@@ -491,6 +491,21 @@ export async function getSecret(id: string): Promise<string | null> {
   return await decrypt(record.encryptedData, iv, derivedKey);
 }
 
+/** Check whether a secret exists without exposing its value to UI code. */
+export async function hasSecret(id: string): Promise<boolean> {
+  const kc = desktopKeychain();
+  if (kc) return (await kc.get(id)) !== null;
+
+  const db = await getDatabase();
+  const record = await idbTransaction<SecureRecord | undefined>(
+    db,
+    STORE_SECRETS,
+    "readonly",
+    (store) => store.get(id),
+  );
+  return record !== undefined;
+}
+
 /**
  * Delete a secret.
  */

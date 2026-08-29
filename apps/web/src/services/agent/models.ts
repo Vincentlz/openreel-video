@@ -5,26 +5,31 @@ export interface LlmModelOption {
   readonly label: string;
 }
 
-/** Tool-use-capable models per provider for the agent chat (BYOK). */
+/**
+ * Compatible endpoints own their model catalogs. This registry intentionally
+ * stays empty so the app never invents a provider or model selection.
+ */
 export const LLM_MODELS: Record<LlmProvider, LlmModelOption[]> = {
-  anthropic: [
-    { id: "claude-sonnet-4-20250514", label: "Claude Sonnet 4" },
-    { id: "claude-opus-4-20250514", label: "Claude Opus 4" },
-    { id: "claude-3-5-sonnet-20241022", label: "Claude 3.5 Sonnet" },
-    { id: "claude-3-5-haiku-20241022", label: "Claude 3.5 Haiku" },
-  ],
-  openai: [
-    { id: "gpt-4o", label: "GPT-4o" },
-    { id: "gpt-4o-mini", label: "GPT-4o mini" },
-    { id: "gpt-4.1", label: "GPT-4.1" },
-    { id: "o4-mini", label: "o4-mini" },
-  ],
+  "openai-compatible": [],
+  "anthropic-compatible": [],
 };
 
 export function defaultModelFor(provider: LlmProvider): string {
-  return LLM_MODELS[provider][0].id;
+  return modelsFor(provider)[0]?.id ?? "";
 }
 
 export function modelsFor(provider: LlmProvider): LlmModelOption[] {
-  return LLM_MODELS[provider];
+  return LLM_MODELS[provider] ?? [];
+}
+
+export function isKnownModel(provider: LlmProvider, model: string): boolean {
+  return modelsFor(provider).some((option) => option.id === model);
+}
+
+/** Accept a provider model id entered by the user, falling back only when blank. */
+export function resolveModel(
+  provider: LlmProvider,
+  model: string | null | undefined,
+): string {
+  return model?.trim() || defaultModelFor(provider);
 }

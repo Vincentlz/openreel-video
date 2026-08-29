@@ -7,7 +7,7 @@ import { ToolcraftText as Text } from "@openreel/ui";
 import { ToolcraftTextInputControl } from "@openreel/ui";
 import { RotateCcw, Sparkles } from "@/icons/lucide-compat";
 import type { Clip } from "@openreel/core";
-import { getSpeedEngine } from "@openreel/core";
+import { getMediaItemCapabilities, getSpeedEngine } from "@openreel/core";
 import { useProjectStore } from "../../../stores/project-store";
 import { MockToggle } from "./shell/InspectorControls";
 
@@ -49,19 +49,33 @@ export const SpeedSection: React.FC<SpeedSectionProps> = ({ clip }) => {
   }, [currentSpeed]);
 
   const hasAudio = () => {
-    const audioTrack = project.timeline.tracks.find(
-      (track) =>
-        track.type === "audio" &&
-        track.clips.some((audioClip) => audioClip.mediaId === clip.mediaId),
+    return project.timeline.tracks.some((track) =>
+      track.clips.some(
+        (audioClip) =>
+          audioClip.id !== clip.id &&
+          audioClip.mediaId === clip.mediaId &&
+          getMediaItemCapabilities(
+            project.mediaLibrary.items.find(
+              (item) => item.id === audioClip.mediaId,
+            ),
+          ).audio,
+      ),
     );
-    return !!audioTrack;
   };
 
   const linkedAudioClip = () => {
     if (!affectAudio) return undefined;
     for (const track of project.timeline.tracks) {
-      if (track.type !== "audio") continue;
-      const audioClip = track.clips.find((c) => c.mediaId === clip.mediaId);
+      const audioClip = track.clips.find(
+        (candidate) =>
+          candidate.id !== clip.id &&
+          candidate.mediaId === clip.mediaId &&
+          getMediaItemCapabilities(
+            project.mediaLibrary.items.find(
+              (item) => item.id === candidate.mediaId,
+            ),
+          ).audio,
+      );
       if (audioClip) return audioClip;
     }
     return undefined;

@@ -147,7 +147,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
           text: response.text,
           messages,
           toolCalls,
-          stoppedReason: "end_turn",
+          stoppedReason: response.stopReason === "max_tokens" ? "budget" : "end_turn",
           committed: true,
           usage,
         };

@@ -15,8 +15,32 @@ function seedClip(opts: {
   trackType: "video" | "audio" | "image";
 }): Project {
   const project = createEmptyProject("Inspector Sections Test");
+  const mediaType = opts.trackType;
   const seeded: Project = {
     ...project,
+    mediaLibrary: {
+      items: [
+        {
+          id: opts.mediaId,
+          name: opts.mediaId,
+          type: mediaType,
+          fileHandle: null,
+          blob: null,
+          metadata: {
+            duration: 10,
+            width: mediaType === "audio" ? 0 : 1920,
+            height: mediaType === "audio" ? 0 : 1080,
+            frameRate: mediaType === "audio" ? 0 : 30,
+            codec: mediaType === "audio" ? "aac" : "h264",
+            sampleRate: mediaType === "image" ? 0 : 48_000,
+            channels: mediaType === "image" ? 0 : 2,
+            fileSize: 1,
+          },
+          thumbnailUrl: null,
+          waveformData: null,
+        },
+      ],
+    },
     timeline: {
       ...project.timeline,
       duration: 10,

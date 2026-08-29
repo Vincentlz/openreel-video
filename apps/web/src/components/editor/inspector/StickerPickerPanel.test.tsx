@@ -47,22 +47,26 @@ describe("StickerPickerPanel custom sticker workflow", () => {
       expect(screen.getByText("spark added at 00:03:15")).toBeInTheDocument();
     });
     const state = useProjectStore.getState();
-    const graphicsTrack = state.project.timeline.tracks.find(
-      (track) => track.type === "graphics",
+    const placementTrack = state.project.timeline.tracks.find(
+      (track) => track.mode === "standard",
     );
-    expect(graphicsTrack).toBeDefined();
+    expect(placementTrack).toBeDefined();
     const stickers =
       useEngineStore.getState().getGraphicsEngine()?.getAllStickerClips() ?? [];
     expect(stickers).toHaveLength(1);
     expect(stickers[0]).toMatchObject({
       name: "spark",
-      trackId: graphicsTrack?.id,
+      trackId: placementTrack?.id,
       startTime: 3.5,
       duration: 5,
     });
     expect(stickers[0]?.imageUrl).toMatch(/^data:image\/png;base64,/);
     expect(useUIStore.getState().getSelectedClipIds()).toEqual([stickers[0]?.id]);
     expect(state.project.stickerClips).toHaveLength(1);
+
+    await state.undo();
+    expect(useProjectStore.getState().project.stickerClips).toHaveLength(0);
+    expect(useProjectStore.getState().project.timeline.tracks).toHaveLength(0);
   });
 
   it("rejects non-image files without changing the timeline", async () => {
@@ -80,9 +84,7 @@ describe("StickerPickerPanel custom sticker workflow", () => {
       await screen.findByRole("alert"),
     ).toHaveTextContent("Choose a PNG, JPEG, WebP, GIF, or SVG image.");
     expect(
-      useProjectStore.getState().project.timeline.tracks.some(
-        (track) => track.type === "graphics",
-      ),
-    ).toBe(false);
+      useProjectStore.getState().project.timeline.tracks,
+    ).toHaveLength(0);
   });
 });

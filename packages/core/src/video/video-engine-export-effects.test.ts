@@ -347,6 +347,38 @@ describe("VideoEngine export frame effects", () => {
     expect(whiteBalancedBitmap.close).toHaveBeenCalledTimes(1);
   });
 
+  it("does not scale an output-sized decoded frame twice", async () => {
+    const outputSizedBitmap = makeBitmap("output-sized", 320, 180);
+    const finalBitmap = makeBitmap("scaled-final", 320, 180);
+    vi.stubGlobal("createImageBitmap", vi.fn().mockResolvedValue(finalBitmap));
+
+    const project = makeProject(makeClip([], {} as ClipColorGrading));
+    const { VideoEngine } = await import("./video-engine");
+    const engine = new VideoEngine();
+    Object.assign(engine as unknown as Record<string, unknown>, {
+      initialized: true,
+      mediabunny: {},
+    });
+    vi.spyOn(
+      engine as unknown as {
+        decodeFrameWithMediaBunny: () => Promise<ImageBitmap>;
+      },
+      "decodeFrameWithMediaBunny",
+    ).mockResolvedValue(outputSizedBitmap);
+
+    await engine.renderFrame(project, 1, 320, 180);
+
+    expect(ctx.scale).toHaveBeenCalledWith(1, 1);
+    expect(ctx.scale).not.toHaveBeenCalledWith(0.5, 0.5);
+    expect(ctx.drawImage).toHaveBeenCalledWith(
+      outputSizedBitmap,
+      -160,
+      -90,
+      320,
+      180,
+    );
+  });
+
   it("recreates the effects engine and retries a transient export failure", async () => {
     const sourceBitmap = makeBitmap("retry-source");
     const processedBitmap = makeBitmap("retry-processed");

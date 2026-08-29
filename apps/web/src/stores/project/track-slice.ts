@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import type { StoreApi } from "zustand";
 import type { Action, Project } from "@openreel/core";
+import { withUniversalTracksCapability } from "@openreel/core";
 import type { ProjectState } from "../project-store";
 
 type Get = StoreApi<ProjectState>["getState"];
@@ -24,14 +25,15 @@ export type TrackSlice = Pick<
 
 export function createTrackSlice(set: Set, get: Get): TrackSlice {
   return {
-    addTrack: async (trackType, position) => {
+    addTrack: async (trackType, position, options) => {
       const { project, actionExecutor } = get();
       const projectCopy = structuredClone(project);
+      const trackId = options?.trackId ?? `track-${uuidv4()}`;
       const action: Action = {
         type: "track/add",
         id: uuidv4(),
         timestamp: Date.now(),
-        params: { trackType, position },
+        params: { trackType, position, ...options, trackId },
       };
       const result = await actionExecutor.execute(action, projectCopy);
       if (result.success) {
@@ -39,7 +41,12 @@ export function createTrackSlice(set: Set, get: Get): TrackSlice {
           ...projectCopy,
           modifiedAt: Date.now(),
         };
-        set({ project: finalProject });
+        set({
+          project:
+            options?.mode === "standard"
+              ? withUniversalTracksCapability(finalProject)
+              : finalProject,
+        });
       }
       return result;
     },

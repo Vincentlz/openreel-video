@@ -8,6 +8,7 @@ import { ToolcraftTextInputControl } from "@openreel/ui";
 import { useProjectStore } from "../../../stores/project-store";
 import { useTimelineStore } from "../../../stores/timeline-store";
 import { useUIStore } from "../../../stores/ui-store";
+import { insertTimelineOverlay } from "../../../stores/project/insert-timeline-overlay";
 import {
   stickerLibrary,
   EMOJI_CATEGORIES,
@@ -67,7 +68,6 @@ const StickerCard: React.FC<StickerCardProps> = ({ sticker, onAdd }) => (
 );
 
 export const StickerPickerPanel: React.FC = () => {
-  const addTrack = useProjectStore((state) => state.addTrack);
   const project = useProjectStore((state) => state.project);
   const createStickerClip = useProjectStore((state) => state.createStickerClip);
   const playheadPosition = useTimelineStore((state) => state.playheadPosition);
@@ -98,71 +98,58 @@ export const StickerPickerPanel: React.FC = () => {
     : stickerLibrary.getAllStickers();
   const stickerCategories = stickerLibrary.getCategories();
 
-  const ensureGraphicsTrack = useCallback(async () => {
-    let graphicsTrack = useProjectStore
-      .getState()
-      .project.timeline.tracks.find(
-        (t) => t.type === "graphics",
-      );
-    if (graphicsTrack) return graphicsTrack;
-    const result = await addTrack("graphics");
-    if (!result.success) return null;
-    graphicsTrack = useProjectStore
-      .getState()
-      .project.timeline.tracks.find((track) => track.type === "graphics");
-    return graphicsTrack ?? null;
-  }, [addTrack]);
-
   const handleAddEmoji = useCallback(
     async (emoji: EmojiItem) => {
       if (!project) return null;
-      const graphicsTrack = await ensureGraphicsTrack();
-
-      if (graphicsTrack) {
-        const clip = stickerLibrary.createEmojiClip(
-          emoji,
-          graphicsTrack.id,
-          playheadPosition,
-          5,
+      const created = await insertTimelineOverlay(
+        playheadPosition,
+        5,
+        (trackId) =>
+          createStickerClip(
+            stickerLibrary.createEmojiClip(
+              emoji,
+              trackId,
+              playheadPosition,
+              5,
+            ),
+          ),
+      );
+      if (created) {
+        select(
+          { type: "shape-clip", id: created.id, trackId: created.trackId },
+          false,
         );
-        const created = createStickerClip(clip);
-        if (created) {
-          select(
-            { type: "shape-clip", id: created.id, trackId: graphicsTrack.id },
-            false,
-          );
-        }
-        return created;
       }
-      return null;
+      return created;
     },
-    [createStickerClip, ensureGraphicsTrack, playheadPosition, project, select],
+    [createStickerClip, playheadPosition, project, select],
   );
 
   const handleAddSticker = useCallback(
     async (sticker: StickerItem) => {
       if (!project) return null;
-      const graphicsTrack = await ensureGraphicsTrack();
-
-      if (graphicsTrack) {
-        const clip = stickerLibrary.createStickerClip(
-          sticker,
-          graphicsTrack.id,
-          playheadPosition,
-          5,
+      const created = await insertTimelineOverlay(
+        playheadPosition,
+        5,
+        (trackId) =>
+          createStickerClip(
+            stickerLibrary.createStickerClip(
+              sticker,
+              trackId,
+              playheadPosition,
+              5,
+            ),
+          ),
+      );
+      if (created) {
+        select(
+          { type: "shape-clip", id: created.id, trackId: created.trackId },
+          false,
         );
-        const created = createStickerClip(clip);
-        if (created) {
-          select(
-            { type: "shape-clip", id: created.id, trackId: graphicsTrack.id },
-            false,
-          );
-        }
-        return created;
       }
-      return null;
+      return created;
     },
-    [createStickerClip, ensureGraphicsTrack, playheadPosition, project, select],
+    [createStickerClip, playheadPosition, project, select],
   );
 
   const handleImportSticker = useCallback(

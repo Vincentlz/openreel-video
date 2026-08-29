@@ -1,9 +1,9 @@
 import type { JSX } from "react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ToolcraftButton as Button } from "@openreel/ui";
 import { ToolcraftIconButton as IconButton } from "@openreel/ui";
 import { ToolcraftText as Text } from "@openreel/ui";
-import { Bot, X, Undo2, Trash2, Sparkles, ShieldCheck, FlaskConical } from "@/icons/lucide-compat";
+import { Bot, X, Undo2, Plus, History, Sparkles, ShieldCheck, FlaskConical } from "@/icons/lucide-compat";
 import { useChatStore } from "../../../stores/chat-store";
 import { useProjectStore } from "../../../stores/project-store";
 import { useSettingsStore } from "../../../stores/settings-store";
@@ -11,6 +11,13 @@ import { ProviderModelPicker } from "./ProviderModelPicker";
 import { ChatMessage } from "./ChatMessage";
 import { ChatComposer } from "./ChatComposer";
 import { InlineConfirmCard } from "./InlineConfirmCard";
+import { ChatErrorCard } from "./ChatErrorCard";
+import { ChatHistoryPanel } from "./ChatHistoryPanel";
+import {
+  hasSecret,
+  isMasterPasswordSet,
+  isSessionUnlocked,
+} from "../../../services/secure-storage";
 
 const SUGGESTIONS: ReadonlyArray<string> = [
   "Add a title that says 'Welcome' for the first 3 seconds",
@@ -25,6 +32,55 @@ function EmptyState({
   hasOpenProject: boolean;
 }): JSX.Element {
   const send = useChatStore((s) => s.send);
+  const provider = useSettingsStore((s) => s.defaultLlmProvider);
+  const openSettings = useSettingsStore((s) => s.openSettings);
+  const settingsOpen = useSettingsStore((s) => s.settingsOpen);
+  const configuredServices = useSettingsStore((s) => s.configuredServices);
+  const baseUrl = useSettingsStore((s) => s.llmBaseUrl);
+  const model = useSettingsStore((s) => s.llmModel);
+  const [setup, setSetup] = useState<
+    "loading" | "ready" | "setup" | "locked" | "missing" | "endpoint"
+  >("loading");
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        if (!provider || !baseUrl.trim() || !model.trim()) {
+          if (active) setSetup("endpoint");
+          return;
+        }
+        if (!configuredServices.includes(provider)) {
+          if (active) setSetup("ready");
+          return;
+        }
+        if (!(await isMasterPasswordSet())) {
+          if (active) setSetup("setup");
+          return;
+        }
+        if (!isSessionUnlocked()) {
+          if (active) setSetup("locked");
+          return;
+        }
+        if (active) setSetup((await hasSecret(provider)) ? "ready" : "missing");
+      } catch {
+        if (active) setSetup("missing");
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [baseUrl, configuredServices, model, provider, settingsOpen]);
+
+  const setupMessage =
+    setup === "endpoint"
+      ? "Choose an API format, then enter your endpoint URL and model ID."
+      : setup === "setup"
+      ? "Set a master password, then add your provider API key."
+      : setup === "locked"
+        ? "Unlock your encrypted API keys to start the AI editor."
+        : "Add the optional endpoint API key to start editing.";
+
   return (
     <div className="flex h-full flex-col items-center justify-center px-2 text-center">
       <div className="mb-3 grid h-10 w-10 place-items-center rounded-xl bg-accent-soft text-accent">
@@ -36,7 +92,28 @@ function EmptyState({
           ? "Describe an edit in plain language and the AI will perform it on your timeline."
           : "Open or create a project, then describe edits in plain language."}
       </Text>
-      {hasOpenProject && (
+      {hasOpenProject && setup !== "loading" && setup !== "ready" && (
+        <div className="mt-4 w-full rounded-lg border border-accent/30 bg-accent-soft/50 p-3 text-left">
+          <div className="text-[11px] font-medium text-fg">Connect your model</div>
+          <Text type="supporting" color="secondary" className="mt-1 block text-[10px] leading-relaxed">
+            {setupMessage}
+          </Text>
+          <Button
+            label={
+              setup === "locked"
+                ? "Unlock API keys"
+                : setup === "endpoint"
+                  ? "Configure endpoint"
+                  : "Set up AI chat"
+            }
+            variant="primary"
+            size="sm"
+            onClick={() => openSettings(setup === "endpoint" ? "general" : "api-keys")}
+            className="mt-2 w-full"
+          />
+        </div>
+      )}
+      {hasOpenProject && setup === "ready" && (
         <div className="mt-4 w-full space-y-1.5">
           {SUGGESTIONS.map((s) => (
             <Button
@@ -66,13 +143,16 @@ export function ChatPanel({
   const lastTurnCommitted = useChatStore((s) => s.lastTurnCommitted);
   const usage = useChatStore((s) => s.usage);
   const undoLastTurn = useChatStore((s) => s.undoLastTurn);
-  const reset = useChatStore((s) => s.reset);
+  const newChat = useChatStore((s) => s.newChat);
   const clearError = useChatStore((s) => s.clearError);
+  const setProjectContext = useChatStore((s) => s.setProjectContext);
   const hasOpenProject = useProjectStore((s) => s.hasOpenProject);
+  const projectId = useProjectStore((s) => (s.hasOpenProject ? s.project.id : null));
   const autoConfirm = useSettingsStore((s) => s.agentAutoConfirm);
   const setAutoConfirm = useSettingsStore((s) => s.setAgentAutoConfirm);
   const dryRun = useSettingsStore((s) => s.agentDryRun);
   const setDryRun = useSettingsStore((s) => s.setAgentDryRun);
+  const openSettings = useSettingsStore((s) => s.openSettings);
 
   const totalTokens = usage.inputTokens + usage.outputTokens;
   const tokenLabel =
@@ -82,14 +162,19 @@ export function ChatPanel({
 
   const busy = status === "running" || status === "awaiting_confirm";
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, pendingConfirm, error]);
 
+  useEffect(() => {
+    setProjectContext(projectId);
+  }, [projectId, setProjectContext]);
+
   return (
-    <div className="flex h-full flex-col bg-bg-1">
+    <div className="relative flex h-full flex-col bg-bg-1">
       <header className="flex items-center gap-2 border-b border-border px-3 py-2">
         <Bot size={15} className="shrink-0 text-accent" />
         <span className="shrink-0 text-[13px] font-medium text-fg">
@@ -141,17 +226,29 @@ export function ChatPanel({
               className="grid h-7 w-7 place-items-center rounded-md text-fg-2 transition-colors hover:bg-hover hover:text-fg"
             />
           )}
-          {messages.length > 0 && (
-            <IconButton
-              label="Clear conversation"
-              icon={<Trash2 size={14} aria-hidden />}
-              size="sm"
-              variant="ghost"
-              onClick={reset}
-              isDisabled={busy}
-              className="grid h-7 w-7 place-items-center rounded-md text-fg-2 transition-colors hover:bg-hover hover:text-fg disabled:opacity-40"
-            />
-          )}
+          <IconButton
+            label="Conversation history"
+            icon={<History size={14} aria-hidden />}
+            size="sm"
+            variant={historyOpen ? "secondary" : "ghost"}
+            onClick={() => setHistoryOpen((open) => !open)}
+            isDisabled={busy}
+            aria-pressed={historyOpen}
+            className="grid h-7 w-7 place-items-center rounded-md text-fg-2 transition-colors hover:bg-hover hover:text-fg disabled:opacity-40"
+          />
+          <Button
+            label="New chat"
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              newChat();
+              setHistoryOpen(false);
+            }}
+            isDisabled={busy || messages.length === 0}
+            className="h-7 shrink-0 px-2 text-[10px]"
+          >
+            <Plus size={12} aria-hidden />
+          </Button>
           {onClose && (
             <IconButton
               label="Close"
@@ -165,6 +262,13 @@ export function ChatPanel({
         </div>
       </header>
 
+      {historyOpen && (
+        <ChatHistoryPanel
+          projectId={projectId}
+          onClose={() => setHistoryOpen(false)}
+        />
+      )}
+
       <div
         ref={scrollRef}
         className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3"
@@ -172,23 +276,27 @@ export function ChatPanel({
         {messages.length === 0 ? (
           <EmptyState hasOpenProject={hasOpenProject} />
         ) : (
-          messages.map((m) => <ChatMessage key={m.id} message={m} />)
+          messages.map((m, index) => (
+            <ChatMessage
+              key={m.id}
+              message={m}
+              pending={busy && index === messages.length - 1 && m.role === "assistant"}
+            />
+          ))
         )}
 
         {pendingConfirm && <InlineConfirmCard call={pendingConfirm.call} />}
 
         {error && (
-          <div className="flex items-start gap-2 rounded-lg border border-status-error/40 bg-status-error/10 p-2.5 text-[12px] text-status-error">
-            <span className="flex-1 break-words">{error}</span>
-            <IconButton
-              label="Clear error"
-              icon={<X size={13} aria-hidden />}
-              size="sm"
-              variant="ghost"
-              onClick={clearError}
-              className="shrink-0 text-status-error/70 transition-colors hover:text-status-error"
-            />
-          </div>
+          <ChatErrorCard
+            error={error}
+            onDismiss={clearError}
+            onOpenSettings={openSettings}
+            onNewChat={() => {
+              newChat();
+              setHistoryOpen(false);
+            }}
+          />
         )}
       </div>
 

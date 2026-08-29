@@ -41,12 +41,15 @@ import {
   getBuiltInEditingTemplate,
   getBuiltInEditingTemplates,
   getMotionPreset,
+  getTrackItems,
   motionEngine,
   normalizeGeneratedShaders,
   normalizeProjectMotionFields,
   reflowMotionAutoLayoutGroups,
   registerProjectGeneratedShaders,
+  resolveTimelinePlacement,
   resolveEditingTemplate,
+  withUniversalTracksCapability,
 } from "@openreel/core";
 import { createMarkerSlice } from "./project/marker-slice";
 import { createSubtitleSlice } from "./project/subtitle-slice";
@@ -56,6 +59,7 @@ import { createProjectStoreHelpers } from "./project/store-helpers";
 import { createTextGraphicsSlice } from "./project/text-graphics-slice";
 import { createHistorySlice } from "./project/history-slice";
 import { createClipSlice } from "./project/clip-slice";
+import { createTimelineItemSlice } from "./project/timeline-item-slice";
 import { v4 as uuidv4 } from "uuid";
 import type {
   VideoEffect,
@@ -85,7 +89,10 @@ import {
   loadFileHandle,
   loadDirectoryHandle,
 } from "../services/media-storage";
-import { restoreMediaItem } from "../utils/media-recovery";
+import {
+  createMissingMediaItem,
+  restoreMediaItem,
+} from "../utils/media-recovery";
 import { projectManager } from "../services/project-manager";
 import {
   planCreationObjectEdit,
@@ -165,6 +172,12 @@ export interface ProjectState {
   addTrack: (
     trackType: "video" | "audio" | "image" | "text" | "graphics",
     position?: number,
+    options?: {
+      mode?: "standard";
+      role?: Track["role"];
+      name?: string;
+      trackId?: string;
+    },
   ) => Promise<ActionResult>;
   duplicateTrack: (trackId: string) => Promise<ActionResult>;
   removeTrack: (trackId: string) => Promise<ActionResult>;
@@ -186,6 +199,16 @@ export interface ProjectState {
   addClipToNewTrack: (
     mediaId: string,
     startTime?: number,
+  ) => Promise<ActionResult>;
+  placeMediaClip: (
+    mediaId: string,
+    targetTrackId: string | undefined,
+    startTime: number,
+  ) => Promise<ActionResult>;
+  moveTimelineItem: (
+    itemId: string,
+    startTime: number,
+    targetTrackId?: string,
   ) => Promise<ActionResult>;
   removeClip: (clipId: string) => Promise<ActionResult>;
   moveClip: (
@@ -936,34 +959,7 @@ export const useProjectStore = create<ProjectState>()(
     };
 
     const trackHasAnyClips = (project: Project, trackId: string): boolean => {
-      const track = project.timeline.tracks.find((candidate) => candidate.id === trackId);
-      if (!track) {
-        return false;
-      }
-
-      if (track.clips.length > 0) {
-        return true;
-      }
-
-      if (track.type === "text") {
-        const titleEngine = useEngineStore.getState().getTitleEngine();
-        return titleEngine?.getAllTextClips().some((clip) => clip.trackId === trackId) ?? false;
-      }
-
-      if (track.type === "graphics") {
-        const graphicsEngine = useEngineStore.getState().getGraphicsEngine();
-        if (!graphicsEngine) {
-          return false;
-        }
-
-        return [
-          ...graphicsEngine.getAllShapeClips(),
-          ...graphicsEngine.getAllSVGClips(),
-          ...graphicsEngine.getAllStickerClips(),
-        ].some((clip) => clip.trackId === trackId);
-      }
-
-      return false;
+      return getTrackItems(project, trackId).length > 0;
     };
 
     const buildEditingTemplateKeyframes = (
@@ -1080,10 +1076,13 @@ export const useProjectStore = create<ProjectState>()(
         return null;
       }
 
+      const mediaItem = project.mediaLibrary.items.find(
+        (item) => item.id === ownerClip.mediaId,
+      );
       const targetType =
-        track.type === "image"
+        mediaItem?.type === "image"
           ? "image"
-          : track.type === "video"
+          : mediaItem?.type === "video"
             ? "video"
             : null;
 
@@ -1114,9 +1113,6 @@ export const useProjectStore = create<ProjectState>()(
         return null;
       }
 
-      const mediaItem = project.mediaLibrary.items.find(
-        (item) => item.id === ownerClip.mediaId,
-      );
       const assetUrls = project.mediaLibrary.items.reduce<Record<string, string>>(
         (urls, item) => {
           const url = item.originalUrl ?? item.thumbnailUrl ?? undefined;
@@ -2013,6 +2009,7 @@ export const useProjectStore = create<ProjectState>()(
 
       // Clip actions
       ...createClipSlice(set, get),
+      ...createTimelineItemSlice(set, get, helpers),
 
       addClipTransition: async (transition: Transition) => {
         const { project, actionExecutor } = get();
@@ -2195,23 +2192,12 @@ export const useProjectStore = create<ProjectState>()(
             const sourceTrack = currentProject.timeline.tracks.find(
               (track) => track.id === item.clip.trackId,
             );
-            const expectedTrackType =
-              item.kind === "text"
-                ? "text"
-                : item.kind === "media"
-                  ? sourceTrack?.type
-                  : "graphics";
-            const isCompatible = (track: Track) =>
-              !track.locked &&
-              (!expectedTrackType || track.type === expectedTrackType);
             const destinationTrack =
-              (sourceTrack && isCompatible(sourceTrack)
-                ? sourceTrack
-                : undefined) ??
               currentProject.timeline.tracks.find(
-                (track) => track.id === trackId && isCompatible(track),
+                (track) => track.id === trackId && !track.locked,
               ) ??
-              currentProject.timeline.tracks.find(isCompatible);
+              (sourceTrack && !sourceTrack.locked ? sourceTrack : undefined) ??
+              currentProject.timeline.tracks.find((track) => !track.locked);
 
             if (!destinationTrack) {
               results.push({
@@ -2224,12 +2210,56 @@ export const useProjectStore = create<ProjectState>()(
               continue;
             }
 
+            const newTrackId = uuidv4();
+            const placement = resolveTimelinePlacement(currentProject, {
+              targetTrackId: destinationTrack.id,
+              startTime: newStartTime,
+              duration: item.clip.duration,
+              policy: "stack-above",
+              newTrackId,
+            });
+            if (!placement.ok) {
+              results.push({
+                success: false,
+                error: {
+                  code:
+                    placement.reason === "track-locked"
+                      ? "TRACK_LOCKED"
+                      : placement.reason === "track-not-found"
+                        ? "TRACK_NOT_FOUND"
+                        : "OVERLAP_DETECTED",
+                  message: `Could not place ${item.kind} clip`,
+                },
+              });
+              continue;
+            }
+            if (placement.createdTrack) {
+              const trackResult = await actionExecutor.execute(
+                {
+                  type: "track/add",
+                  id: uuidv4(),
+                  timestamp: Date.now(),
+                  params: {
+                    trackType: "video",
+                    trackId: placement.createdTrack.id,
+                    position: placement.createdTrack.position,
+                    mode: "standard",
+                  },
+                },
+                currentProject,
+              );
+              if (!trackResult.success) {
+                results.push(trackResult);
+                continue;
+              }
+            }
+
             if (item.kind !== "media") {
               const pasted = get().pasteOverlayClip(
                 item.kind,
                 item.clip,
-                newStartTime,
-                destinationTrack.id,
+                placement.startTime,
+                placement.trackId,
               );
               if (pasted) {
                 results.push({ success: true });
@@ -2246,24 +2276,26 @@ export const useProjectStore = create<ProjectState>()(
               continue;
             }
 
-            const beforeIds = new Set(
-              destinationTrack.clips.map((clip) => clip.id),
+            const placedTrack = currentProject.timeline.tracks.find(
+              (track) => track.id === placement.trackId,
             );
+            const beforeIds = new Set(placedTrack?.clips.map((clip) => clip.id));
             const action: Action = {
               type: "clip/add",
               id: uuidv4(),
               timestamp: Date.now(),
               params: {
-                trackId: destinationTrack.id,
+                clipId: uuidv4(),
+                trackId: placement.trackId,
                 mediaId: item.clip.mediaId,
-                startTime: newStartTime,
+                startTime: placement.startTime,
                 sourceClip: item.clip,
               },
             };
             const result = await actionExecutor.execute(action, currentProject);
             results.push(result);
             if (result.success) {
-              const pasted = destinationTrack.clips.find(
+              const pasted = placedTrack?.clips.find(
                 (clip) => !beforeIds.has(clip.id),
               );
               if (pasted) pastedIds.push(pasted.id);
@@ -2274,7 +2306,10 @@ export const useProjectStore = create<ProjectState>()(
         }
 
         set({
-          project: { ...get().project, modifiedAt: Date.now() },
+          project: withUniversalTracksCapability({
+            ...get().project,
+            modifiedAt: Date.now(),
+          }),
           lastPastedClipIds: pastedIds,
         });
         return results;
@@ -2956,9 +2991,17 @@ export const useProjectStore = create<ProjectState>()(
           const blobMap = new Map(storedMedia.map((m) => [m.id, m.blob]));
 
           const restoredItems = await Promise.all(
-            recoveredProject.mediaLibrary.items.map((item) =>
-              restoreMediaItem(item, blobMap.get(item.id)),
-            ),
+            recoveredProject.mediaLibrary.items.map(async (item) => {
+              try {
+                return await restoreMediaItem(item, blobMap.get(item.id));
+              } catch (error) {
+                console.warn(
+                  `[ProjectStore] Failed to restore media ${item.name}; marking it missing:`,
+                  error,
+                );
+                return createMissingMediaItem(item);
+              }
+            }),
           );
 
           const projectWithMedia: Project = {

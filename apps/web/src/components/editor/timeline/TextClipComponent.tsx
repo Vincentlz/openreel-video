@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { ToolcraftContextMenu as ContextMenu } from "@openreel/ui";
 import { Type } from "@/icons/lucide-compat";
-import type { TextClip } from "@openreel/core";
+import type { TextClip, Track } from "@openreel/core";
 import { useGraphicsClipContextMenuItems } from "./GraphicsClipContextMenu";
 import { calculateSnap } from "./utils";
 import { useProjectStore } from "../../../stores/project-store";
@@ -14,7 +14,14 @@ interface TextClipComponentProps {
   isSelected: boolean;
   onSelect: (clipId: string, addToSelection: boolean) => void;
   onTrim: (clipId: string, edge: "left" | "right", newTime: number) => void;
-  onMoveClip?: (clipId: string, newStartTime: number) => void;
+  onMoveClip?: (
+    clipId: string,
+    newStartTime: number,
+    targetTrackId?: string,
+  ) => void | Promise<void>;
+  allTracks: Track[];
+  trackHeights: Map<string, number>;
+  timelineRef: React.RefObject<HTMLDivElement | null>;
 }
 
 export const TextClipComponent: React.FC<TextClipComponentProps> = ({
@@ -24,12 +31,18 @@ export const TextClipComponent: React.FC<TextClipComponentProps> = ({
   onSelect,
   onTrim,
   onMoveClip,
+  allTracks,
+  trackHeights,
+  timelineRef,
 }) => {
   const clipRef = useRef<HTMLDivElement>(null);
   const [isTrimming, setIsTrimming] = useState<"left" | "right" | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState(0);
   const historyGroupOpenRef = useRef(false);
+  const pendingDropRef = useRef<{ time: number; targetTrackId?: string }>({
+    time: textClip.startTime,
+  });
   const { snapSettings } = useUIStore();
   const { playheadPosition } = useTimelineStore();
   const trimStartRef = useRef<{
@@ -100,10 +113,34 @@ export const TextClipComponent: React.FC<TextClipComponentProps> = ({
         pixelsPerSecond,
         textClip.duration,
       );
+      const timelineRect = timelineRef.current?.getBoundingClientRect();
+      const scrollTop = timelineRef.current?.scrollTop ?? 0;
+      let targetTrackId: string | undefined;
+      if (timelineRect) {
+        const mouseY = e.clientY - timelineRect.top + scrollTop;
+        let cumulativeY = 0;
+        for (const track of allTracks) {
+          const height = trackHeights.get(track.id) ?? 48;
+          if (mouseY >= cumulativeY && mouseY < cumulativeY + height) {
+            if (!track.locked && track.id !== textClip.trackId) {
+              targetTrackId = track.id;
+            }
+            break;
+          }
+          cumulativeY += height;
+        }
+      }
+      pendingDropRef.current = { time: snapResult.time, targetTrackId };
       onMoveClip(textClip.id, snapResult.time);
     };
 
-    const handleMouseUp = () => {
+    const handleMouseUp = async () => {
+      const pending = pendingDropRef.current;
+      await onMoveClip(
+        textClip.id,
+        pending.time,
+        pending.targetTrackId ?? textClip.trackId,
+      );
       setIsDragging(false);
       endTimingGesture();
     };
@@ -115,7 +152,21 @@ export const TextClipComponent: React.FC<TextClipComponentProps> = ({
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [isDragging, textClip.id, textClip.duration, pixelsPerSecond, dragOffset, onMoveClip, snapSettings, playheadPosition, endTimingGesture]);
+  }, [
+    isDragging,
+    textClip.id,
+    textClip.trackId,
+    textClip.duration,
+    pixelsPerSecond,
+    dragOffset,
+    onMoveClip,
+    snapSettings,
+    playheadPosition,
+    endTimingGesture,
+    timelineRef,
+    allTracks,
+    trackHeights,
+  ]);
 
   const handleTrimStart = (e: React.MouseEvent, edge: "left" | "right") => {
     if (e.button !== 0) return;

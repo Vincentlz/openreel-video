@@ -228,19 +228,20 @@ declare global {
       };
       cloud: {
         fetch(
-          service: "elevenlabs" | "openai" | "anthropic",
+          service:
+            | "elevenlabs"
+            | "openai"
+            | "anthropic"
+            | "openai-compatible"
+            | "anthropic-compatible",
           path: string,
-          options?: { method?: string; headers?: Record<string, string>; body?: string },
+          options?: {
+            method?: string;
+            headers?: Record<string, string>;
+            body?: string;
+            baseUrl?: string;
+          },
         ): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: ArrayBuffer }>;
-      };
-      gpu: {
-        uploadMedia(args: { srcPath: string; filename: string; contentType?: string }): Promise<{ mediaKey: string; downloadUrl?: string }>;
-        uploadExport(args: { bytes: ArrayBuffer | Uint8Array; filename: string; contentType?: string }): Promise<{ mediaKey: string; downloadUrl?: string }>;
-        submitJob(args: { kind: string; params: Record<string, unknown>; mediaKey?: string; mediaFilename?: string }): Promise<{ jobID: string; status: string; manifestURL?: string }>;
-        jobStatus(jobID: string): Promise<{ jobID: string; status: string; progress?: number; message?: string; manifestURL?: string; error?: string; queuePosition?: number; pendingAhead?: number }>;
-        fetchManifest(jobID: string): Promise<Record<string, unknown>>;
-        downloadArtifact(jobID: string, relativePath: string): Promise<{ tempPath: string; mime: string }>;
-        cancelJob(jobID: string): Promise<{ jobID: string; status: string }>;
       };
       win: {
         minimize(): Promise<void>;

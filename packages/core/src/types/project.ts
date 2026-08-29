@@ -44,6 +44,10 @@ export interface Project {
   readonly motionInstances?: MotionCompositionInstance[];
   readonly generatedShaders?: readonly MotionShaderDef[];
   readonly creation?: CreationProjectState;
+  /** Feature capabilities required to edit this project without data loss. */
+  readonly capabilities?: readonly string[];
+  /** Oldest project reader version that can safely open this project. */
+  readonly minimumReaderVersion?: string;
 }
 
 export interface MediaLibrary {
@@ -89,4 +93,7 @@ export interface MediaMetadata {
   readonly fileSize: number;
   /** Number of audio tracks in the file (may be > 1 for multi-track video/audio files) */
   readonly audioTrackCount?: number;
+  /** Optional source-stream flags preserved by modern importers. */
+  readonly hasVideo?: boolean;
+  readonly hasAudio?: boolean;
 }

@@ -23,6 +23,10 @@ import {
 import { scheduleVolumeAutomationOnGain } from "./clip-volume-automation";
 import { scheduleClipFadeEnvelope } from "./clip-fade-envelope";
 import { getTrackTransitionAudioFades } from "./transition-audio-fades";
+import {
+  getMediaItemCapabilities,
+  trackHasAudioItems,
+} from "../timeline/timeline-items";
 
 const SEGMENTED_AUDIO_DECODE_THRESHOLD_SECONDS = 120;
 
@@ -206,7 +210,7 @@ export class AudioEngine {
   ): Promise<RenderedAudio> {
     this.ensureInitialized();
 
-    const { timeline, mediaLibrary, settings } = project;
+    const { mediaLibrary, settings } = project;
     const sampleRate = settings.sampleRate || this.config.sampleRate;
     const channels = settings.channels || this.config.channels;
     const safeDuration = Math.max(duration, 0.001);
@@ -217,7 +221,7 @@ export class AudioEngine {
       sampleRate,
     );
     const audioTracks = this.getAudioTracksAtTime(
-      timeline,
+      project,
       startTime,
       duration,
     );
@@ -289,17 +293,21 @@ export class AudioEngine {
   }
 
   private getAudioTracksAtTime(
-    timeline: Timeline,
+    project: Project,
     startTime: number,
     duration: number,
   ): AudioTrackRenderInfo[] {
     const result: AudioTrackRenderInfo[] = [];
     const endTime = startTime + duration;
+    const { timeline, mediaLibrary } = project;
 
     timeline.tracks.forEach((track, index) => {
-      if (track.type !== "audio" && track.type !== "video") return;
-
-      const clips = this.getClipsInRange(track, startTime, endTime);
+      const clips = this.getClipsInRange(track, startTime, endTime).filter(
+        (clip) =>
+          getMediaItemCapabilities(
+            mediaLibrary.items.find((item) => item.id === clip.mediaId),
+          ).audio,
+      );
       if (clips.length === 0) return;
 
       result.push({
@@ -765,9 +773,9 @@ export class AudioEngine {
     return offlineContext.startRendering();
   }
 
-  getChannelStates(timeline: Timeline): AudioChannelState[] {
-    return timeline.tracks
-      .filter((track) => track.type === "audio" || track.type === "video")
+  getChannelStates(project: Project): AudioChannelState[] {
+    return project.timeline.tracks
+      .filter((track) => trackHasAudioItems(project, track.id))
       .map((track) => ({
         trackId: track.id,
         volume: 1, // Default volume, would be stored in track

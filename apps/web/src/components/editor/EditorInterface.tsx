@@ -9,7 +9,6 @@ import { InspectorPanel } from "./InspectorPanel";
 import { Timeline } from "./Timeline";
 import { KeyframeEditorPanel } from "./KeyframeEditorPanel";
 import { AudioMixer } from "../audio-mixer";
-import { AIPanel } from "./ai-panel/AIPanel";
 import { KeyboardShortcutsOverlay } from "./KeyboardShortcutsOverlay";
 import { PanelErrorBoundary } from "../ErrorBoundary";
 import { SpotlightTour, MoGraphTour } from "./tour";
@@ -569,14 +568,6 @@ export const EditorInterface: React.FC = () => {
                   visible
                   onClose={() => setPanelVisible("audioMixer", false)}
                 />
-              </PanelErrorBoundary>
-            </div>
-          )}
-
-          {panels.ai?.visible && (
-            <div className="shrink-0 border-b border-border">
-              <PanelErrorBoundary name="AI">
-                <AIPanel />
               </PanelErrorBoundary>
             </div>
           )}

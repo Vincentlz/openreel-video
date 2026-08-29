@@ -143,6 +143,12 @@ export interface ProjectState {
   addTrack: (
     trackType: "video" | "audio" | "image" | "text" | "graphics",
     position?: number,
+    options?: {
+      mode?: "standard";
+      role?: Track["role"];
+      name?: string;
+      trackId?: string;
+    },
   ) => Promise<ActionResult>;
   duplicateTrack: (trackId: string) => Promise<ActionResult>;
   removeTrack: (trackId: string) => Promise<ActionResult>;
@@ -158,6 +164,16 @@ export interface ProjectState {
     trackId: string,
     mediaId: string,
     startTime: number,
+  ) => Promise<ActionResult>;
+  placeMediaClip: (
+    mediaId: string,
+    targetTrackId: string | undefined,
+    startTime: number,
+  ) => Promise<ActionResult>;
+  moveTimelineItem: (
+    itemId: string,
+    startTime: number,
+    targetTrackId?: string,
   ) => Promise<ActionResult>;
   removeClip: (clipId: string) => Promise<ActionResult>;
   moveClip: (

@@ -7,13 +7,11 @@ import { useEngineStore } from "../../stores/engine-store";
 import type { Transform, EditingTemplatePrimitive } from "@openreel/core";
 import {
   ChromaKeyEngine,
-  initializeTranscriptionService,
-  type WhisperTranscriptionProgress,
+  getMediaItemCapabilities,
   type CaptionAnimationStyle,
   CAPTION_ANIMATION_STYLES,
   getAnimationStyleDisplayName,
 } from "@openreel/core";
-import { OPENREEL_TRANSCRIBE_URL } from "../../config/api-endpoints";
 import { mergeEditingTemplateControlValues } from "./panels/EditingTemplateControls";
 import {
   getAudioBridgeEffects,
@@ -123,8 +121,6 @@ export const InspectorPanel: React.FC = () => {
     getClipTransition,
     updateClipTransition,
     removeClipTransition,
-    getMediaItem,
-    addSubtitle,
     importSRT,
     updateSubtitle,
     getSubtitle,
@@ -151,13 +147,6 @@ export const InspectorPanel: React.FC = () => {
   const getTitleEngine = useEngineStore((state) => state.getTitleEngine);
   const getGraphicsEngine = useEngineStore((state) => state.getGraphicsEngine);
 
-  // Transcription state
-  const [transcriptionProgress, setTranscriptionProgress] =
-    useState<WhisperTranscriptionProgress | null>(null);
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const [targetLanguage, setTargetLanguage] = useState("none");
-  const [defaultAnimationStyle, setDefaultAnimationStyle] =
-    useState<CaptionAnimationStyle>("word-highlight");
   const [expandedRecipeApplicationId, setExpandedRecipeApplicationId] =
     useState<string | null>(null);
   const [captionWordsPerLine, setCaptionWordsPerLine] = useState(5);
@@ -571,79 +560,6 @@ export const InspectorPanel: React.FC = () => {
     updateVideoEffect,
   ]);
 
-  const handleGenerateSubtitles = useCallback(async () => {
-    if (!selectedClip || isTranscribing) return;
-
-    const mediaItem = getMediaItem(selectedClip.mediaId);
-    if (!mediaItem) {
-      console.error("[Subtitles] No media item found for clip");
-      return;
-    }
-
-    setIsTranscribing(true);
-    setTranscriptionProgress({
-      phase: "extracting",
-      progress: 0,
-      message: "Preparing audio...",
-    });
-
-    try {
-      const transcriptionService = initializeTranscriptionService({
-        apiEndpoint: `${OPENREEL_TRANSCRIBE_URL}/transcribe`,
-        targetLanguage: targetLanguage !== "none" ? targetLanguage : undefined,
-      });
-
-      const regularClip = getClip(selectedClip.id);
-      if (!regularClip) {
-        throw new Error("Could not find clip data");
-      }
-
-      const subtitles = await transcriptionService.transcribeClip(
-        regularClip,
-        mediaItem,
-        setTranscriptionProgress,
-      );
-
-      for (const subtitle of subtitles) {
-        addSubtitle({
-          ...subtitle,
-          animationStyle: defaultAnimationStyle,
-        });
-      }
-
-      setTranscriptionProgress({
-        phase: "complete",
-        progress: 100,
-        message: `Added ${subtitles.length} subtitles`,
-      });
-
-      setTimeout(() => {
-        setTranscriptionProgress(null);
-        setIsTranscribing(false);
-      }, 2000);
-    } catch (error) {
-      console.error("[Subtitles] Transcription failed:", error);
-      setTranscriptionProgress({
-        phase: "error",
-        progress: 0,
-        message:
-          error instanceof Error ? error.message : "Transcription failed",
-      });
-      setTimeout(() => {
-        setTranscriptionProgress(null);
-        setIsTranscribing(false);
-      }, 3000);
-    }
-  }, [
-    selectedClip,
-    isTranscribing,
-    getMediaItem,
-    getClip,
-    addSubtitle,
-    defaultAnimationStyle,
-    targetLanguage,
-  ]);
-
   const handleSRTImport = useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
@@ -724,9 +640,7 @@ export const InspectorPanel: React.FC = () => {
     : "#00ff00";
   const tolerance = (chromaKeySettings?.tolerance || 0.3) * 100;
 
-  /**
-   * Detect clip type based on track type and clip properties
-   */
+  /** Detect clip type from the selected item itself, not its owning track. */
   const clipType = useMemo(() => {
     if (!selectedClip) return null;
 
@@ -750,29 +664,20 @@ export const InspectorPanel: React.FC = () => {
       return "sticker";
     }
 
-    // Find the track this clip belongs to
-    const track = project.timeline.tracks.find((t) =>
-      t.clips.some((c) => c.id === selectedClip.id),
-    );
-
-    if (!track) return "video";
-
-    // Check for clip types based on track type and media
     const mediaItem = project.mediaLibrary.items.find(
       (item) => item.id === selectedClip.mediaId,
     );
 
-    if (track.type === "audio") {
+    if (mediaItem?.type === "audio") {
       return "audio";
     }
 
-    if (track.type === "image" || mediaItem?.type === "image") {
+    if (mediaItem?.type === "image") {
       return "image";
     }
 
-    // Default to video for video tracks
     return "video";
-  }, [selectedClip, project.timeline.tracks, project.mediaLibrary.items]);
+  }, [selectedClip, project.mediaLibrary.items]);
 
   /**
    * Determine which sections to show based on clip type
@@ -785,7 +690,15 @@ export const InspectorPanel: React.FC = () => {
     clipType === "svg" ||
     clipType === "sticker";
   const showColorGrading = clipType === "video" || clipType === "image";
-  const showAudioEffects = clipType === "video" || clipType === "audio";
+  const selectedMediaCapabilities = getMediaItemCapabilities(
+    selectedTimelineClip
+      ? project.mediaLibrary.items.find(
+          (item) => item.id === selectedTimelineClip.mediaId,
+        )
+      : undefined,
+  );
+  const showAudioEffects =
+    clipType === "audio" || selectedMediaCapabilities.audio;
   const showTextSection = clipType === "text";
   const showShapeSection = clipType === "shape";
   const showSVGSection = clipType === "svg";
@@ -1017,13 +930,6 @@ export const InspectorPanel: React.FC = () => {
                   showVideoControls={showVideoControls}
                   showAudioEffects={showAudioEffects}
                   showVideoEffects={showVideoEffects}
-                  transcriptionProgress={transcriptionProgress}
-                  isTranscribing={isTranscribing}
-                  targetLanguage={targetLanguage}
-                  setTargetLanguage={setTargetLanguage}
-                  defaultAnimationStyle={defaultAnimationStyle}
-                  setDefaultAnimationStyle={setDefaultAnimationStyle}
-                  handleGenerateSubtitles={handleGenerateSubtitles}
                   handleSRTImport={handleSRTImport}
                   srtInputRef={srtInputRef}
                   handleRemoveBackground={handleRemoveBackground}

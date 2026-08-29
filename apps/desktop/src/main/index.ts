@@ -23,9 +23,6 @@ import {
 } from "./ipc/aurora";
 import { getKeyStore } from "./ipc/keychain";
 import { cloudFetch } from "./ipc/cloud";
-import { GpuTokenProvider } from "./gpu/token-provider";
-import { GpuJobClient } from "./gpu/job-client";
-import { getOrCreateInstanceId } from "./gpu/instance-id";
 import { applyWindowControl, windowIsMaximized } from "./window-controls";
 import { installApplicationMenu, sendMenuAction } from "./app-menu";
 import { attachUnsavedGuard, markQuitting } from "./lifecycle";
@@ -80,11 +77,6 @@ import {
   rigHumanoidModelArgsSchema,
   rigHumanoidModelResultSchema,
   cloudFetchArgsSchema,
-  gpuUploadMediaArgsSchema,
-  gpuUploadExportArgsSchema,
-  gpuSubmitJobArgsSchema,
-  gpuJobIdArgsSchema,
-  gpuArtifactArgsSchema,
   windowControlArgsSchema,
 } from "../shared/ipc-contract";
 import type {
@@ -110,30 +102,6 @@ migrateGpuCacheOnUpgrade();
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
-}
-
-const BROKER_BASE_URL =
-  process.env.OPENREEL_AUTH_BROKER_BASE_URL ?? "https://api.openreel.video";
-const GPU_BASE_URL = process.env.OPENREEL_GPU_BASE_URL ?? "https://ai.openreel.video";
-const GPU_BUNDLE_ID = "com.openreel.video";
-
-let gpuClient: GpuJobClient | null = null;
-async function getGpuClient(): Promise<GpuJobClient> {
-  if (gpuClient) return gpuClient;
-  const instanceId = await getOrCreateInstanceId();
-  const tokenProvider = new GpuTokenProvider({
-    brokerBaseUrl: BROKER_BASE_URL,
-    bundleId: GPU_BUNDLE_ID,
-    instanceId,
-  });
-  gpuClient = new GpuJobClient({
-    gpuBaseUrl: GPU_BASE_URL,
-    brokerBaseUrl: BROKER_BASE_URL,
-    bundleId: GPU_BUNDLE_ID,
-    tokenProvider,
-    tempFilePath: (ext: string) => tempFilePath({ ext }),
-  });
-  return gpuClient;
 }
 
 function rendererRoot(): string {
@@ -246,27 +214,6 @@ app.whenReady().then(() => {
   );
   handle(CHANNELS.keychainDelete, z.object({ id: z.string() }), ({ id }) => getKeyStore().delete(id));
   handle(CHANNELS.cloudFetch, cloudFetchArgsSchema, cloudFetch);
-  handle(CHANNELS.gpuUploadMedia, gpuUploadMediaArgsSchema, async (args) =>
-    (await getGpuClient()).uploadMedia(args),
-  );
-  handle(CHANNELS.gpuUploadExport, gpuUploadExportArgsSchema, async (args) =>
-    (await getGpuClient()).uploadBytes(args),
-  );
-  handle(CHANNELS.gpuSubmitJob, gpuSubmitJobArgsSchema, async (args) =>
-    (await getGpuClient()).submitJob(args),
-  );
-  handle(CHANNELS.gpuJobStatus, gpuJobIdArgsSchema, async ({ jobID }) =>
-    (await getGpuClient()).jobStatus(jobID),
-  );
-  handle(CHANNELS.gpuFetchManifest, gpuJobIdArgsSchema, async ({ jobID }) =>
-    (await getGpuClient()).fetchManifest(jobID),
-  );
-  handle(CHANNELS.gpuDownloadArtifact, gpuArtifactArgsSchema, async ({ jobID, relativePath }) =>
-    (await getGpuClient()).downloadArtifact(jobID, relativePath),
-  );
-  handle(CHANNELS.gpuCancelJob, gpuJobIdArgsSchema, async ({ jobID }) =>
-    (await getGpuClient()).cancelJob(jobID),
-  );
   ipcMain.handle(CHANNELS.exportStart, (e, raw) => startExport(e.sender, raw));
   handle(
     CHANNELS.exportWriteAudioWav,

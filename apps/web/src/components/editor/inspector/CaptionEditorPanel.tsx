@@ -29,7 +29,10 @@ export const CaptionEditorPanel: React.FC<CaptionEditorPanelProps> = ({
     () =>
       new Set(
         project.timeline.tracks
-          .filter((track) => track.type === "text" && track.name === "Captions")
+          .filter(
+            (track) =>
+              track.role === "captions" || track.name === "Captions",
+          )
           .map((track) => track.id),
       ),
     [project.timeline.tracks],

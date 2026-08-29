@@ -1,14 +1,14 @@
 import type { Action, ActionResult } from "@openreel/core/types/actions";
 import type { Project } from "@openreel/core/types/project";
 import type { CapabilityManifest } from "@openreel/core/capabilities/manifest";
+import type {
+  MulticamActivityMap,
+  MulticamManifest,
+  MulticamShotPolicy,
+  MulticamTranscriptSegment,
+} from "@openreel/core";
 
 export type JobKind =
-  | "transcribe"
-  | "detectHighlights"
-  | "removeBackground"
-  | "upscale"
-  | "generateMusic"
-  | "inpaint"
   | "exportVideo"
   | "exportAudio"
   | "exportFrame";
@@ -161,6 +161,37 @@ export interface HumanoidRigResult {
   readonly error?: string;
 }
 
+export interface MulticamHostBridge {
+  getManifest(groupId?: string): Promise<{ groupId: string; manifest: MulticamManifest }>;
+  getActivityMap(
+    groupId?: string,
+    range?: { startMs?: number; endMs?: number },
+  ): Promise<{ groupId: string; activity: MulticamActivityMap; sampled: boolean }>;
+  getTranscript(
+    groupId?: string,
+    range?: { startMs?: number; endMs?: number },
+  ): Promise<{ groupId: string; transcripts: Record<string, MulticamTranscriptSegment[]> }>;
+  setEditPolicy(
+    groupId: string,
+    policy: Partial<MulticamShotPolicy>,
+  ): Promise<Record<string, unknown>>;
+  annotateSegment(input: {
+    groupId: string;
+    startMs: number;
+    endMs: number;
+    note: string;
+  }): Promise<Record<string, unknown>>;
+  getEditSummary(groupId?: string): Promise<Record<string, unknown>>;
+  overrideCut(input: {
+    groupId: string;
+    switchId: string;
+    operation: "accept" | "reject" | "nudge" | "set-camera";
+    deltaMs?: number;
+    cameraId?: string;
+  }): Promise<Record<string, unknown>>;
+  previewFrame(groupId: string, timeMs: number): Promise<JobResult>;
+}
+
 export interface CreateProjectOptions {
   readonly name?: string;
   readonly width?: number;
@@ -207,6 +238,8 @@ export interface EditingHost {
   runJob(kind: JobKind, params: Record<string, unknown>): Promise<JobResult>;
   /** Machine-readable enums + parameter ranges for the agent. */
   capabilities(): CapabilityManifest;
+  /** Narrow multicam planning/review surface shared with local MCP clients. */
+  multicam?: MulticamHostBridge;
   /** Throws when no project is open (guard for mutating tools). */
   requireOpenProject(): void;
 

@@ -9,7 +9,7 @@ import { useProjectStore } from "../../stores/project-store";
 import { ChannelStrip } from "./ChannelStrip";
 import type { ChannelStripState } from "./types";
 import { volumeToDb, formatDb } from "./types";
-import { getRealtimeAudioGraph } from "@openreel/core";
+import { getRealtimeAudioGraph, trackHasAudioItems } from "@openreel/core";
 import { ToolcraftIconButton as IconButton } from "@openreel/ui";
 import { ToolcraftSlider as Slider } from "@openreel/ui";
 import { ToolcraftText as Text } from "@openreel/ui";
@@ -141,10 +141,8 @@ export const AudioMixer: React.FC<AudioMixerProps> = ({
   // Get audio tracks from the timeline (Requirement 20.1) – safe if project/timeline not ready
   const audioTracks = useMemo(() => {
     const tracks = project?.timeline?.tracks ?? [];
-    return tracks.filter(
-      (track) => track.type === "audio" || track.type === "video",
-    );
-  }, [project?.timeline?.tracks]);
+    return tracks.filter((track) => trackHasAudioItems(project, track.id));
+  }, [project]);
 
   useEffect(() => {
     try {

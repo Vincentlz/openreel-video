@@ -36,6 +36,27 @@ const AUTO_SAVE_DB_NAME = "openreel-autosave";
 const AUTO_SAVE_DB_VERSION = 1;
 const AUTO_SAVE_STORE = "autosaves";
 
+export function serializeProjectForAutoSave(project: Project): string {
+  const mediaItems = project.mediaLibrary.items.map((item) => ({
+    ...item,
+    blob: null,
+    fileHandle: null,
+    waveformData: null,
+    thumbnailUrl: item.thumbnailUrl?.startsWith("blob:")
+      ? null
+      : item.thumbnailUrl,
+    filmstripThumbnails: undefined,
+  }));
+
+  return JSON.stringify({
+    ...project,
+    mediaLibrary: {
+      ...project.mediaLibrary,
+      items: mediaItems,
+    },
+  });
+}
+
 type AutoSaveEventType = "saved" | "restored" | "error" | "recoveryAvailable";
 type AutoSaveEventCallback = (data?: unknown) => void;
 
@@ -182,7 +203,7 @@ export class AutoSaveManager {
       projectName: project.name,
       timestamp: Date.now(),
       slot: this.currentSlot,
-      data: JSON.stringify(project),
+      data: serializeProjectForAutoSave(project),
     };
 
     await this.saveRecord(record);

@@ -28,6 +28,7 @@ import {
   saveSecret,
   getSecret,
   deleteSecret,
+  hasSecret,
   listSecrets,
   changeMasterPassword,
 } from "../../../services/secure-storage";
@@ -57,7 +58,23 @@ export const ApiKeysPanel: React.FC = () => {
     setUnlocked(isSessionUnlocked());
 
     if (isSessionUnlocked()) {
-      const keys = await listSecrets();
+      const keys =
+        typeof window !== "undefined" && window.openreel?.platform === "desktop"
+          ? (
+              await Promise.all(
+                SERVICE_REGISTRY.map(async (service) =>
+                  (await hasSecret(service.id))
+                    ? {
+                        id: service.id,
+                        label: service.label,
+                        createdAt: 0,
+                        updatedAt: 0,
+                      }
+                    : null,
+                ),
+              )
+            ).filter((key): key is NonNullable<typeof key> => key !== null)
+          : await listSecrets();
       setStoredKeys(keys);
     }
   }, []);
@@ -183,7 +200,7 @@ export const ApiKeysPanel: React.FC = () => {
         </Text>
         <Text as="p" type="supporting" color="secondary" display="block" className="mb-6 max-w-sm">
           Set up a master password to encrypt and store your API keys locally.
-          Keys are encrypted with AES-256-GCM and never leave your browser.
+          Keys are encrypted with AES-256-GCM and are only sent when making a request to the selected service.
         </Text>
         <Button
           label="Set Up Master Password"
@@ -327,8 +344,9 @@ export const ApiKeysPanel: React.FC = () => {
               </Card>
 
               <Text type="supporting" color="secondary" display="block" className="mt-2 text-[10px]">
-                Added {new Date(stored.createdAt).toLocaleDateString()} &middot;
-                Updated {new Date(stored.updatedAt).toLocaleDateString()}
+                {stored.createdAt > 0
+                  ? `Added ${new Date(stored.createdAt).toLocaleDateString()} · Updated ${new Date(stored.updatedAt).toLocaleDateString()}`
+                  : "Stored securely in the system keychain"}
               </Text>
             </Card>
           );
@@ -342,7 +360,9 @@ export const ApiKeysPanel: React.FC = () => {
             <Plus size={14} className="text-primary" aria-hidden />
             <Text type="label" weight="bold">
               Add{" "}
-              {SERVICE_REGISTRY.find((s) => s.id === addingService)?.label} Key
+              {SERVICE_REGISTRY.find((s) => s.id === addingService)?.keyOptional
+                ? `Optional ${SERVICE_REGISTRY.find((s) => s.id === addingService)?.label} Key`
+                : `${SERVICE_REGISTRY.find((s) => s.id === addingService)?.label} Key`}
             </Text>
           </div>
           <ToolcraftTextInputControl
@@ -351,7 +371,11 @@ export const ApiKeysPanel: React.FC = () => {
             type="password"
             value={newKeyValue}
             onChange={setNewKeyValue}
-            placeholder="Paste your API key here"
+            placeholder={
+              SERVICE_REGISTRY.find((s) => s.id === addingService)?.keyOptional
+                ? "Paste an API key if your endpoint requires one"
+                : "Paste your API key here"
+            }
             hasAutoFocus
             width="100%"
             className="mb-3 font-mono text-xs"
@@ -384,7 +408,7 @@ export const ApiKeysPanel: React.FC = () => {
             {availableServices.map((service) => (
               <ClickableCard
                 key={service.id}
-                label={`Add ${service.label} API key`}
+                label={`Add ${service.keyOptional ? "optional " : ""}${service.label} API key`}
                 onClick={() => setAddingService(service.id)}
                 padding={3}
                 variant="default"
@@ -396,7 +420,7 @@ export const ApiKeysPanel: React.FC = () => {
                   </div>
                   <div>
                     <Text type="label" weight="bold" display="block">
-                      {service.label}
+                      {service.label}{service.keyOptional ? " (optional key)" : ""}
                     </Text>
                     <Text type="supporting" color="secondary" display="block">
                       {service.description}

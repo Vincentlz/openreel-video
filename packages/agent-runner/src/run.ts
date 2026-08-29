@@ -4,6 +4,7 @@ import {
   toAnthropicTools,
   toOpenAITools,
   buildSystemPrompt,
+  selectToolsForPrompt,
 } from "@openreel/agent";
 import type { LLMClient, RunTurnResult, JobRunner } from "@openreel/agent";
 import type { Project } from "@openreel/core/types/project";
@@ -46,13 +47,17 @@ export async function runHeadlessEdit(
       maxTokens: opts.maxTokens,
       fetchFn: opts.fetchFn,
     });
-  const tools = opts.provider === "anthropic" ? toAnthropicTools() : toOpenAITools();
+  const selectedToolNames = selectToolsForPrompt(opts.prompt);
+  const tools =
+    opts.provider === "anthropic"
+      ? toAnthropicTools(selectedToolNames)
+      : toOpenAITools(selectedToolNames);
 
   const result = await runTurn({
     host,
     llm,
     tools,
-    system: buildSystemPrompt(host),
+    system: buildSystemPrompt(host, selectedToolNames),
     messages: [{ role: "user", content: opts.prompt }],
     limits: opts.limits,
     dryRun: opts.dryRun,

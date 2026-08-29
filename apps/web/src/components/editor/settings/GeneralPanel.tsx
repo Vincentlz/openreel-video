@@ -5,8 +5,10 @@ import { ToolcraftClickableCard as ClickableCard } from "@openreel/ui";
 import { ToolcraftNumberInputControl } from "@openreel/ui";
 import { ToolcraftSelectControl as Selector } from "@openreel/ui";
 import { ToolcraftText as Text } from "@openreel/ui";
+import { ToolcraftTextInputControl as TextInput } from "@openreel/ui";
 import { useSettingsStore, SERVICE_REGISTRY, type TtsProvider, type LlmProvider, type AggregatorProvider } from "../../../stores/settings-store";
 import { useProjectStore } from "../../../stores/project-store";
+import { EDITING_FRAME_RATE_OPTIONS } from "../editing-frame-rate";
 
 const ASPECT_PRESETS: Array<{ label: string; width: number; height: number }> = [
   { label: "16:9 Landscape (1080p)", width: 1920, height: 1080 },
@@ -37,17 +39,24 @@ export const GeneralPanel: React.FC = () => {
     autoSaveInterval,
     defaultTtsProvider,
     defaultLlmProvider,
+    llmBaseUrl,
+    llmModel,
     defaultAggregator,
     configuredServices,
     setAutoSave,
     setAutoSaveInterval,
     setDefaultTtsProvider,
     setDefaultLlmProvider,
+    setLlmBaseUrl,
+    setLlmModel,
     setDefaultAggregator,
   } = useSettingsStore();
 
   const projectWidth = useProjectStore((s) => s.project.settings.width);
   const projectHeight = useProjectStore((s) => s.project.settings.height);
+  const projectFrameRate = useProjectStore(
+    (s) => s.project.settings.frameRate,
+  );
   const updateProjectSettings = useProjectStore((s) => s.updateSettings);
   const backgroundFillMode = useProjectStore(
     (s) => s.project.timeline.backgroundFillMode,
@@ -82,18 +91,10 @@ export const GeneralPanel: React.FC = () => {
     }
   }, [draftWidth, draftHeight, applyDimensions]);
 
-  const ttsProviders = [
-    { id: "piper", label: "Piper (Free / Built-in)" },
-    ...SERVICE_REGISTRY.filter(
-      (s) => s.id === "elevenlabs" || configuredServices.includes(s.id),
-    ),
-  ];
+  const ttsProviders = SERVICE_REGISTRY.filter((s) => s.id === "elevenlabs");
 
   const llmProviders = SERVICE_REGISTRY.filter(
-    (s) =>
-      s.id === "openai" ||
-      s.id === "anthropic" ||
-      configuredServices.includes(s.id),
+    (s) => s.id === "openai-compatible" || s.id === "anthropic-compatible",
   );
 
   const aggregatorProviders = SERVICE_REGISTRY.filter(
@@ -102,7 +103,6 @@ export const GeneralPanel: React.FC = () => {
       s.id === "freepik" ||
       configuredServices.includes(s.id),
   );
-
   return (
     <div className="space-y-6 pb-4">
       {/* Project Composition */}
@@ -169,6 +169,35 @@ export const GeneralPanel: React.FC = () => {
             onClick={handleApplyCustom}
             variant="primary"
             size="md"
+          />
+        </div>
+
+        <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-background-tertiary p-3">
+          <div>
+            <Text type="supporting" color="primary" className="text-sm font-medium">
+              Editing frame rate
+            </Text>
+            <Text type="supporting" color="secondary" className="mt-0.5 block text-[11px]">
+              Controls preview playback, frame stepping, and the default export rate.
+              Existing clip timing stays unchanged.
+            </Text>
+          </div>
+          <Selector
+            label="Editing frame rate"
+            isLabelHidden
+            size="md"
+            width={160}
+            value={String(projectFrameRate)}
+            onChange={(value) => {
+              const frameRate = Number(value);
+              if (Number.isFinite(frameRate) && frameRate > 0) {
+                void updateProjectSettings({ frameRate });
+              }
+            }}
+            options={EDITING_FRAME_RATE_OPTIONS.map((option) => ({
+              label: option.label,
+              value: String(option.value),
+            }))}
           />
         </div>
 
@@ -284,14 +313,13 @@ export const GeneralPanel: React.FC = () => {
 
       <div className="h-px bg-border" />
 
-      {/* Default providers */}
+      {/* AI connections */}
       <div className="space-y-4">
         <Text type="body" color="primary" className="text-sm font-medium">
-          Default AI Providers
+          AI Connections
         </Text>
         <Text type="supporting" color="secondary" className="text-xs">
-          Choose which service to use by default for AI features.
-          Configure API keys in the &quot;API Keys&quot; tab first.
+          Connect a compatible endpoint you control. OpenReel does not choose a vendor or model for you.
         </Text>
 
         <div className="space-y-3">
@@ -312,18 +340,65 @@ export const GeneralPanel: React.FC = () => {
 
           <div className="flex items-center justify-between">
             <Text type="supporting" color="secondary" className="text-sm">
-              AI Assistant (LLM)
+              AI Assistant API format
             </Text>
             <Selector
-              label="AI Assistant provider"
+              label="AI Assistant API format"
               isLabelHidden
               size="md"
               width={180}
-              value={defaultLlmProvider}
-              onChange={(value) => setDefaultLlmProvider(value as LlmProvider)}
-              options={llmProviders.map((s) => ({ label: s.label, value: s.id }))}
+              value={defaultLlmProvider ?? ""}
+              onChange={(value) =>
+                setDefaultLlmProvider((value || null) as LlmProvider | null)
+              }
+              options={[
+                { label: "Choose API format…", value: "" },
+                ...llmProviders.map((s) => ({ label: s.label, value: s.id })),
+              ]}
             />
           </div>
+
+          {defaultLlmProvider ? (
+            <div className="space-y-3 rounded-lg border border-border bg-background-tertiary p-3">
+              <div>
+                <Text type="supporting" color="secondary" className="text-sm font-medium">
+                  {defaultLlmProvider === "anthropic-compatible"
+                    ? "Anthropic-compatible endpoint"
+                    : "OpenAI-compatible endpoint"}
+                </Text>
+                <Text type="supporting" color="secondary" className="mt-0.5 block text-xs">
+                  Enter your API host and the exact tool-capable model ID exposed by that host.
+                </Text>
+              </div>
+              <TextInput
+                label="Base URL"
+                value={llmBaseUrl}
+                onChange={setLlmBaseUrl}
+                placeholder={
+                  defaultLlmProvider === "anthropic-compatible"
+                    ? "https://gateway.example/v1"
+                    : "http://localhost:11434/v1"
+                }
+                width="100%"
+              />
+              <TextInput
+                label="Model ID"
+                value={llmModel}
+                onChange={setLlmModel}
+                placeholder="Enter any model ID from your endpoint"
+                width="100%"
+              />
+              <Text type="supporting" color="secondary" className="block text-[11px] leading-relaxed">
+                Load available models from the AI chat settings, or enter an ID manually when discovery is unavailable. API keys are optional.
+              </Text>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-dashed border-border bg-background-tertiary p-3">
+              <Text type="supporting" color="secondary" className="block text-xs">
+                Choose an API format to configure your host and model.
+              </Text>
+            </div>
+          )}
 
           <div className="flex items-center justify-between">
             <div>

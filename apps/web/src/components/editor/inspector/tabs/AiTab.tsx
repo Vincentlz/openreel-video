@@ -1,32 +1,15 @@
 import React from "react";
-import { Zap, Captions, Loader2, Upload } from "@/icons/lucide-compat";
+import { Zap, Loader2, Upload } from "@/icons/lucide-compat";
 import { ToolcraftButton as Button } from "@openreel/ui";
 import { ToolcraftCard as Card } from "@openreel/ui";
 import { ToolcraftFileDropControl as FileInput } from "@openreel/ui";
-import { ToolcraftProgressBar as ProgressBar } from "@openreel/ui";
-import { ToolcraftSelectControl as Selector } from "@openreel/ui";
 import { ToolcraftText as Text } from "@openreel/ui";
-import {
-  type WhisperTranscriptionProgress,
-  type CaptionAnimationStyle,
-  CAPTION_ANIMATION_STYLES,
-  getAnimationStyleDisplayName,
-} from "@openreel/core";
 import { AutoReframeSection } from "../";
 import { AutoCaptionPanel } from "../AutoCaptionPanel";
 import { CaptionEditorPanel } from "../CaptionEditorPanel";
 import { AutoEditPanel } from "../../panels/AutoEditPanel";
 import { HighlightExtractorPanel } from "../../panels/HighlightExtractorPanel";
 import { InspectorSection } from "../shell/InspectorSection";
-import { AIPanel } from "../../ai-panel/AIPanel";
-import type { ClipMediaType } from "../../ai-panel/ai-kinds.config";
-import { isDesktopGpuAvailable } from "../../../../services/gpu-jobs";
-
-const GPU_CLIP_MEDIA: readonly ClipMediaType[] = ["video", "image", "audio"];
-
-function asGpuClipMedia(clipType: string | null): ClipMediaType | null {
-  return GPU_CLIP_MEDIA.includes(clipType as ClipMediaType) ? (clipType as ClipMediaType) : null;
-}
 
 export interface AiTabProps {
   clipId: string;
@@ -34,15 +17,6 @@ export interface AiTabProps {
   showVideoControls: boolean;
   showAudioEffects: boolean;
   showVideoEffects: boolean;
-  transcriptionProgress: WhisperTranscriptionProgress | null;
-  isTranscribing: boolean;
-  targetLanguage: string;
-  setTargetLanguage: React.Dispatch<React.SetStateAction<string>>;
-  defaultAnimationStyle: CaptionAnimationStyle;
-  setDefaultAnimationStyle: React.Dispatch<
-    React.SetStateAction<CaptionAnimationStyle>
-  >;
-  handleGenerateSubtitles: () => Promise<void>;
   handleSRTImport: (
     event: React.ChangeEvent<HTMLInputElement>,
   ) => Promise<void>;
@@ -63,13 +37,6 @@ export const AiTab: React.FC<AiTabProps> = ({
   showVideoControls,
   showAudioEffects,
   showVideoEffects,
-  transcriptionProgress,
-  isTranscribing,
-  targetLanguage,
-  setTargetLanguage,
-  defaultAnimationStyle,
-  setDefaultAnimationStyle,
-  handleGenerateSubtitles,
   handleSRTImport,
   srtInputRef,
   handleRemoveBackground,
@@ -81,24 +48,8 @@ export const AiTab: React.FC<AiTabProps> = ({
   captionWordsPerLine,
   onCaptionWordsPerLineChange,
 }) => {
-  const gpuClipMedia = asGpuClipMedia(clipType);
-  // On desktop the local transcription endpoint (cloud.openreel.video) is
-  // CORS-blocked from app://openreel, so generation is done via the GPU
-  // "Auto Captions" tile in Cloud GPU Tools instead.
-  const isDesktop = isDesktopGpuAvailable();
-
   return (
     <>
-      {gpuClipMedia && (
-        <InspectorSection
-          title="Cloud GPU Tools"
-          sectionId="cloud-gpu-tools"
-          defaultOpen
-        >
-          <AIPanel clipTypeFilter={gpuClipMedia} embedded />
-        </InspectorSection>
-      )}
-
       {clipType === "video" && (
         <>
           <InspectorSection
@@ -126,103 +77,9 @@ export const AiTab: React.FC<AiTabProps> = ({
                 }}
                 className="hidden"
               />
-              {isDesktop && (
-                <Text type="supporting" color="secondary" className="text-[11px]">
-                  Use the “Auto Captions” tool in Cloud GPU Tools above to generate captions.
-                </Text>
-              )}
-              {!isDesktop && (
-                <>
-              <div className="space-y-1">
-                <Selector
-                  label="Animation Style"
-                  size="sm"
-                  width="100%"
-                  value={defaultAnimationStyle}
-                  onChange={(v) =>
-                    setDefaultAnimationStyle(v as CaptionAnimationStyle)
-                  }
-                  isDisabled={isTranscribing}
-                  options={CAPTION_ANIMATION_STYLES.map((style) => ({
-                    label: getAnimationStyleDisplayName(style),
-                    value: style,
-                  }))}
-                />
-              </div>
-
-              <div className="space-y-1">
-                <Selector
-                  label="Target Language"
-                  size="sm"
-                  width="100%"
-                  value={targetLanguage}
-                  onChange={setTargetLanguage}
-                  isDisabled={isTranscribing}
-                  options={[
-                    { label: "Original (no translation)", value: "none" },
-                    { label: "English", value: "en" },
-                    { label: "Spanish", value: "es" },
-                    { label: "French", value: "fr" },
-                    { label: "German", value: "de" },
-                    { label: "Portuguese", value: "pt" },
-                    { label: "Italian", value: "it" },
-                    { label: "Dutch", value: "nl" },
-                    { label: "Russian", value: "ru" },
-                    { label: "Chinese", value: "zh" },
-                    { label: "Japanese", value: "ja" },
-                    { label: "Korean", value: "ko" },
-                    { label: "Arabic", value: "ar" },
-                    { label: "Hindi", value: "hi" },
-                    { label: "Turkish", value: "tr" },
-                    { label: "Polish", value: "pl" },
-                    { label: "Swedish", value: "sv" },
-                  ]}
-                />
-              </div>
-
-              {transcriptionProgress ? (
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2">
-                    <Loader2
-                      size={12}
-                      className="animate-spin text-primary"
-                    />
-                    <Text type="supporting" color="primary" className="text-[10px]">
-                      {transcriptionProgress.message}
-                    </Text>
-                  </div>
-                  <ProgressBar
-                    label="Caption generation progress"
-                    isLabelHidden
-                    value={transcriptionProgress.progress}
-                    max={100}
-                    hasValueLabel={false}
-                    variant={
-                      transcriptionProgress.phase === "error"
-                        ? "error"
-                        : transcriptionProgress.phase === "complete"
-                          ? "success"
-                          : "accent"
-                    }
-                  />
-                </div>
-              ) : (
-                <Button
-                  label="Generate Captions"
-                  onClick={handleGenerateSubtitles}
-                  isDisabled={isTranscribing}
-                  variant="primary"
-                  size="sm"
-                  icon={<Captions size={14} aria-hidden />}
-                  className="w-full justify-center"
-                />
-              )}
-                </>
-              )}
               <Button
                 label="Import SRT / VTT as Text"
                 onClick={() => srtInputRef.current?.click()}
-                isDisabled={isTranscribing}
                 variant="secondary"
                 size="sm"
                 icon={<Upload size={13} aria-hidden />}
@@ -268,7 +125,7 @@ export const AiTab: React.FC<AiTabProps> = ({
 
       {showAudioEffects && (
         <InspectorSection
-          title="AI Highlights"
+          title="Local Highlights"
           sectionId="ai-highlights"
           defaultOpen={false}
         >

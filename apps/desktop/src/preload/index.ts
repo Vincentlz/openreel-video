@@ -76,18 +76,13 @@ contextBridge.exposeInMainWorld("openreel", {
     fetch: (
       service: string,
       path: string,
-      options?: { method?: string; headers?: Record<string, string>; body?: string },
+      options?: {
+        method?: string;
+        headers?: Record<string, string>;
+        body?: string;
+        baseUrl?: string;
+      },
     ) => ipcRenderer.invoke(CHANNELS.cloudFetch, { service, path, ...(options ?? {}) }),
-  },
-  gpu: {
-    uploadMedia: (args: unknown) => ipcRenderer.invoke(CHANNELS.gpuUploadMedia, args),
-    uploadExport: (args: unknown) => ipcRenderer.invoke(CHANNELS.gpuUploadExport, args),
-    submitJob: (args: unknown) => ipcRenderer.invoke(CHANNELS.gpuSubmitJob, args),
-    jobStatus: (jobID: string) => ipcRenderer.invoke(CHANNELS.gpuJobStatus, { jobID }),
-    fetchManifest: (jobID: string) => ipcRenderer.invoke(CHANNELS.gpuFetchManifest, { jobID }),
-    downloadArtifact: (jobID: string, relativePath: string) =>
-      ipcRenderer.invoke(CHANNELS.gpuDownloadArtifact, { jobID, relativePath }),
-    cancelJob: (jobID: string) => ipcRenderer.invoke(CHANNELS.gpuCancelJob, { jobID }),
   },
   win: {
     minimize: () => ipcRenderer.invoke(CHANNELS.windowControl, { action: "minimize" }),

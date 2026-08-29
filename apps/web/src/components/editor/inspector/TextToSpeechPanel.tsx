@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState } from "react";
 import {
   Mic,
   Loader2,
@@ -12,22 +12,20 @@ import { ToolcraftCard as Card } from "@openreel/ui";
 import { ToolcraftIconButton as IconButton } from "@openreel/ui";
 import { ToolcraftText as Text } from "@openreel/ui";
 import { ToolcraftTextAreaControl } from "@openreel/ui";
-import { PropertySlider } from "./shell/PropertySlider";
 import { MockToggle } from "./shell/InspectorControls";
-import { toast } from "../../../stores/notification-store";
-import { useSettingsStore, type TtsProvider } from "../../../stores/settings-store";
+import { useSettingsStore } from "../../../stores/settings-store";
 import { useElevenLabsApi } from "./hooks/useElevenLabsApi";
 import { useTtsActions } from "./hooks/useTtsActions";
 import { VoiceBrowser } from "./VoiceBrowser";
 import { ModelSelector } from "./ModelSelector";
 import { EnhancedTextPreview } from "./EnhancedTextPreview";
 import { AudioResult } from "./AudioResult";
-import { TTS_PROVIDERS } from "./tts-constants";
 
 export const TextToSpeechPanel: React.FC = () => {
   const {
-    defaultTtsProvider,
     defaultLlmProvider,
+    llmBaseUrl,
+    llmModel,
     openSettings,
     settingsOpen,
     configuredServices,
@@ -37,19 +35,10 @@ export const TextToSpeechPanel: React.FC = () => {
 
   const hasElevenLabsKey = configuredServices.includes("elevenlabs");
 
-  const defaultProvider: TtsProvider =
-    defaultTtsProvider === "elevenlabs" && hasElevenLabsKey
-      ? "elevenlabs"
-      : "piper";
-
-  const [provider, setProvider] = useState<TtsProvider>(defaultProvider);
   const [text, setText] = useState("");
   const [selectedVoice, setSelectedVoice] = useState<string>(
-    defaultProvider === "elevenlabs" && favoriteVoices.length > 0
-      ? favoriteVoices[0].voiceId
-      : "amy",
+    favoriteVoices.length > 0 ? favoriteVoices[0].voiceId : "",
   );
-  const [speed, setSpeed] = useState(1.0);
   const [error, setError] = useState<string | null>(null);
   const [enhanceText, setEnhanceText] = useState(false);
   const [enhancedPreview, setEnhancedPreview] = useState<string | null>(null);
@@ -60,14 +49,14 @@ export const TextToSpeechPanel: React.FC = () => {
     isLoadingVoices,
     isLoadingModels,
     generateWithElevenLabs,
-    generateWithPiper,
     enhanceViaLlm,
   } = useElevenLabsApi({
-    provider,
     hasElevenLabsKey,
     settingsOpen,
     elevenLabsModel,
     defaultLlmProvider,
+    llmBaseUrl,
+    llmModel,
   });
 
   const {
@@ -86,18 +75,14 @@ export const TextToSpeechPanel: React.FC = () => {
     saveToMedia,
     addToTimeline,
     downloadAudio,
-    setGeneratedAudio,
   } = useTtsActions({
-    provider,
     selectedVoice,
     text,
-    speed,
     enhanceText,
     enhancedPreview,
     allVoices,
     favoriteVoices,
     generateWithElevenLabs,
-    generateWithPiper,
     enhanceViaLlm,
     setText,
     setError,
@@ -109,24 +94,6 @@ export const TextToSpeechPanel: React.FC = () => {
     if (model) return model.name;
     return elevenLabsModel;
   };
-
-  const warnUnsavedAudio = useCallback(() => {
-    if (hasUnsavedAudio) {
-      toast.warning("Unsaved audio discarded", "Save to media or download next time to keep it.");
-    }
-  }, [hasUnsavedAudio]);
-
-  const handleProviderSwitch = useCallback((newProvider: TtsProvider) => {
-    if (newProvider === provider) return;
-    warnUnsavedAudio();
-    setProvider(newProvider);
-    setSelectedVoice(
-      newProvider === "elevenlabs"
-        ? (favoriteVoices.length > 0 ? favoriteVoices[0].voiceId : "")
-        : "amy",
-    );
-    setGeneratedAudio(null);
-  }, [provider, warnUnsavedAudio, favoriteVoices, setGeneratedAudio]);
 
   const charCount = text.length;
   const maxChars = 5000;
@@ -147,7 +114,7 @@ export const TextToSpeechPanel: React.FC = () => {
               Text to Speech
             </Text>
             <Text type="supporting" color="secondary" display="block" className="text-[9px]">
-              AI voice generation
+              User-keyed ElevenLabs voice generation
             </Text>
           </div>
         </div>
@@ -161,35 +128,15 @@ export const TextToSpeechPanel: React.FC = () => {
         />
       </Card>
 
-      <div className="space-y-2">
-        <Text type="supporting" color="secondary" weight="bold" className="block text-[10px]">
-          Provider
-        </Text>
-        <div className="flex gap-1.5">
-          {TTS_PROVIDERS.map((p) => {
-            const isDisabled = p.id === "elevenlabs" && !hasElevenLabsKey;
-            return (
-              <Button
-                key={p.id}
-                label={p.label}
-                variant={provider === p.id ? "primary" : "secondary"}
-                size="sm"
-                onClick={() => {
-                  if (isDisabled) {
-                    openSettings("api-keys");
-                    return;
-                  }
-                  handleProviderSwitch(p.id);
-                }}
-                isDisabled={false}
-                className={`flex-1 text-[10px] ${isDisabled ? "opacity-60" : ""}`}
-              />
-            );
-          })}
-        </div>
-      </div>
+      {!hasElevenLabsKey && (
+        <Card variant="yellow" padding={2} className="border border-amber-500/30">
+          <Text type="supporting" className="text-[10px] text-amber-400">
+            Add your ElevenLabs API key to enable speech generation. OpenReel no longer hosts a speech server.
+          </Text>
+        </Card>
+      )}
 
-      {provider === "elevenlabs" && hasElevenLabsKey && (
+      {hasElevenLabsKey && (
         <ModelSelector allModels={allModels} isLoadingModels={isLoadingModels} />
       )}
 
@@ -207,26 +154,22 @@ export const TextToSpeechPanel: React.FC = () => {
           width="100%"
         />
         <div className="flex items-center justify-between">
-          {provider === "elevenlabs" ? (
-            <div className="flex items-center gap-1.5">
-              <MockToggle
-                ariaLabel="Enhance for TTS"
-                checked={enhanceText}
-                onChange={setEnhanceText}
-              />
-              <Text
-                type="supporting"
-                color="secondary"
-                className="flex items-center gap-1 text-[9px] cursor-pointer"
-                onClick={() => setEnhanceText(!enhanceText)}
-              >
-                <Sparkles size={10} className={enhanceText ? "text-amber-400" : ""} aria-hidden />
-                Enhance for TTS
-              </Text>
-            </div>
-          ) : (
-            <div />
-          )}
+          <div className="flex items-center gap-1.5">
+            <MockToggle
+              ariaLabel="Enhance for TTS"
+              checked={enhanceText}
+              onChange={setEnhanceText}
+            />
+            <Text
+              type="supporting"
+              color="secondary"
+              className="flex items-center gap-1 text-[9px] cursor-pointer"
+              onClick={() => setEnhanceText(!enhanceText)}
+            >
+              <Sparkles size={10} className={enhanceText ? "text-amber-400" : ""} aria-hidden />
+              Enhance for TTS
+            </Text>
+          </div>
           <Text
             type="supporting"
             className={`text-[9px] ${charCount > maxChars * 0.9 ? "text-red-400" : "text-fg-3"}`}
@@ -245,31 +188,11 @@ export const TextToSpeechPanel: React.FC = () => {
       </div>
 
       <VoiceBrowser
-        provider={provider}
         selectedVoice={selectedVoice}
         onSelectVoice={setSelectedVoice}
         allVoices={allVoices}
         isLoadingVoices={isLoadingVoices}
       />
-
-      {provider === "piper" && (
-        <div className="space-y-2">
-          <PropertySlider
-            label="Speed"
-            min={0.5}
-            max={2.0}
-            step={0.1}
-            value={speed}
-            onChange={(value: number) => setSpeed(value)}
-            formatValue={(value) => `${value.toFixed(1)}x`}
-          />
-          <div className="flex justify-between">
-            <Text type="supporting" color="secondary" className="text-[8px]">0.5x</Text>
-            <Text type="supporting" color="secondary" className="text-[8px]">1.0x</Text>
-            <Text type="supporting" color="secondary" className="text-[8px]">2.0x</Text>
-          </div>
-        </div>
-      )}
 
       {error && (
         <Card
@@ -300,7 +223,7 @@ export const TextToSpeechPanel: React.FC = () => {
         </Card>
       )}
 
-      {enhanceText && provider === "elevenlabs" && !enhancedPreview && (
+      {enhanceText && !enhancedPreview && (
         <Button
           label={isEnhancing ? "Enhancing..." : "Enhance Text"}
           icon={
@@ -331,7 +254,7 @@ export const TextToSpeechPanel: React.FC = () => {
         variant="primary"
         size="md"
         onClick={generateSpeech}
-        isDisabled={isGenerating || !text.trim() || (provider === "elevenlabs" && !selectedVoice) || (enhanceText && provider === "elevenlabs" && !enhancedPreview)}
+        isDisabled={isGenerating || !hasElevenLabsKey || !text.trim() || !selectedVoice || (enhanceText && !enhancedPreview)}
         isLoading={isGenerating}
         className="w-full"
       />
@@ -363,8 +286,7 @@ export const TextToSpeechPanel: React.FC = () => {
       )}
 
       <Text type="supporting" color="secondary" className="block text-[9px] text-center">
-        Powered by {provider === "elevenlabs" ? "ElevenLabs" : "Piper TTS"}
-        {provider === "elevenlabs" && ` · ${getSelectedModelName()}`}
+        Powered by ElevenLabs · {getSelectedModelName()}
       </Text>
     </div>
   );

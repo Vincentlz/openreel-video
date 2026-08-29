@@ -21,6 +21,42 @@ export interface LLMResponse {
   readonly usage?: LLMUsage;
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+function responseError(raw: unknown, provider: string): Error | null {
+  if (!isRecord(raw) || !isRecord(raw.error)) return null;
+  const message =
+    typeof raw.error.message === "string"
+      ? raw.error.message
+      : typeof raw.error.type === "string"
+        ? raw.error.type
+        : "The provider returned an error response.";
+  return new Error(`${provider}: ${message}`);
+}
+
+function tokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function parseToolInput(value: unknown, toolName: string): Record<string, unknown> {
+  if (value === undefined || value === null || value === "") return {};
+  if (isRecord(value)) return value;
+  if (typeof value !== "string") {
+    throw new Error(`Model returned invalid arguments for tool ${toolName}.`);
+  }
+
+  try {
+    let parsed: unknown = JSON.parse(value);
+    // A few compatible servers double-encode function arguments.
+    if (typeof parsed === "string") parsed = JSON.parse(parsed);
+    if (!isRecord(parsed)) throw new Error("arguments must be an object");
+    return parsed;
+  } catch {
+    throw new Error(`Model returned invalid JSON arguments for tool ${toolName}.`);
+  }
+}
+
 export type LoopToolResultBlock =
   | { readonly type: "text"; readonly text: string }
   | {
@@ -208,20 +244,25 @@ export function buildAnthropicBody(
 }
 
 export function parseAnthropicResponse(raw: unknown): LLMResponse {
+  const upstreamError = responseError(raw, "Anthropic");
+  if (upstreamError) throw upstreamError;
   const r = raw as {
-    content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: unknown }>;
+    content?: string | Array<{ type?: string; text?: string; id?: string; name?: string; input?: unknown }>;
     stop_reason?: string;
     usage?: { input_tokens?: number; output_tokens?: number };
   };
-  let text = "";
+  let text = typeof r.content === "string" ? r.content : "";
   const toolUses: LLMToolUse[] = [];
-  for (const block of r.content ?? []) {
+  for (const block of Array.isArray(r.content) ? r.content : []) {
     if (block.type === "text" && block.text) text += block.text;
-    else if (block.type === "tool_use" && block.id && block.name) {
+    else if (block.type === "tool_use") {
+      if (!block.id || !block.name) {
+        throw new Error("Anthropic returned a tool call without an id or name.");
+      }
       toolUses.push({
         id: block.id,
         name: block.name,
-        input: (block.input as Record<string, unknown>) ?? {},
+        input: parseToolInput(block.input, block.name),
       });
     }
   }
@@ -233,8 +274,8 @@ export function parseAnthropicResponse(raw: unknown): LLMResponse {
         : "end_turn";
   const usage = r.usage
     ? {
-        inputTokens: r.usage.input_tokens ?? 0,
-        outputTokens: r.usage.output_tokens ?? 0,
+        inputTokens: tokenCount(r.usage.input_tokens),
+        outputTokens: tokenCount(r.usage.output_tokens),
       }
     : undefined;
   return { text, toolUses, stopReason, usage };
@@ -297,45 +338,87 @@ export function buildOpenAIBody(
     model,
     messages,
     tools: input.tools,
-    ...(maxTokens ? { max_tokens: maxTokens } : {}),
+    ...(maxTokens ? { max_completion_tokens: maxTokens } : {}),
   };
 }
 
 export function parseOpenAIResponse(raw: unknown): LLMResponse {
+  const upstreamError = responseError(raw, "OpenAI-compatible provider");
+  if (upstreamError) throw upstreamError;
   const r = raw as {
     choices?: Array<{
       message?: {
-        content?: string | null;
-        tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
+        content?: unknown;
+        tool_calls?: unknown[];
+        function_call?: unknown;
       };
       finish_reason?: string;
     }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      input_tokens?: number;
+      output_tokens?: number;
+    };
   };
   const choice = r.choices?.[0];
+  if (!choice?.message) {
+    throw new Error("OpenAI-compatible provider returned no assistant message.");
+  }
   const msg = choice?.message;
-  const toolUses: LLMToolUse[] = (msg?.tool_calls ?? []).map((tc) => {
-    let input: Record<string, unknown> = {};
-    try {
-      input = JSON.parse(tc.function.arguments) as Record<string, unknown>;
-    } catch {
-      input = {};
+
+  const textFromContent = (content: unknown): string => {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (!isRecord(part)) return "";
+        if (typeof part.text === "string") return part.text;
+        if (isRecord(part.text) && typeof part.text.value === "string") {
+          return part.text.value;
+        }
+        return typeof part.content === "string" ? part.content : "";
+      })
+      .join("");
+  };
+
+  const rawToolCalls = Array.isArray(msg.tool_calls) ? [...msg.tool_calls] : [];
+  if (rawToolCalls.length === 0 && msg.function_call !== undefined) {
+    rawToolCalls.push({ id: "legacy-function-call-0", function: msg.function_call });
+  }
+  const toolUses: LLMToolUse[] = rawToolCalls.map((rawToolCall, index) => {
+    if (!isRecord(rawToolCall)) {
+      throw new Error("OpenAI-compatible provider returned an invalid tool call.");
     }
-    return { id: tc.id, name: tc.function.name, input };
+    const fn = isRecord(rawToolCall.function) ? rawToolCall.function : rawToolCall;
+    const name = typeof fn.name === "string" ? fn.name : "";
+    if (!name) {
+      throw new Error("OpenAI-compatible provider returned a tool call without a name.");
+    }
+    const id =
+      typeof rawToolCall.id === "string" && rawToolCall.id
+        ? rawToolCall.id
+        : `compatible-tool-call-${index}`;
+    return {
+      id,
+      name,
+      input: parseToolInput(fn.arguments, name),
+    };
   });
   const stopReason: LLMStopReason =
-    choice?.finish_reason === "tool_calls"
+    toolUses.length > 0 || choice.finish_reason === "tool_calls" || choice.finish_reason === "function_call"
       ? "tool_use"
-      : choice?.finish_reason === "length"
+      : choice.finish_reason === "length" || choice.finish_reason === "max_tokens"
         ? "max_tokens"
         : "end_turn";
   const usage = r.usage
     ? {
-        inputTokens: r.usage.prompt_tokens ?? 0,
-        outputTokens: r.usage.completion_tokens ?? 0,
+        inputTokens: tokenCount(r.usage.prompt_tokens ?? r.usage.input_tokens),
+        outputTokens: tokenCount(r.usage.completion_tokens ?? r.usage.output_tokens),
       }
     : undefined;
-  return { text: msg?.content ?? "", toolUses, stopReason, usage };
+  return { text: textFromContent(msg.content), toolUses, stopReason, usage };
 }
 
 export class OpenAIClient implements LLMClient {
@@ -351,15 +434,25 @@ export interface ClientFromSendOptions {
   readonly provider: LlmProviderName;
   readonly model: string;
   readonly maxTokens?: number;
+  /** Omit provider-specific output-token fields for broad compatible-endpoint support. */
+  readonly omitMaxTokens?: boolean;
   readonly send: LLMSend;
 }
 
 /** Assembles the right provider client from an injected transport (shared by the web + node factories). */
 export function makeClientFromSend(opts: ClientFromSendOptions): LLMClient {
-  const maxTokens = opts.maxTokens ?? 4096;
+  const maxTokens = opts.omitMaxTokens ? undefined : (opts.maxTokens ?? 4096);
   return opts.provider === "anthropic"
-    ? new AnthropicClient({ model: opts.model, maxTokens, send: opts.send })
-    : new OpenAIClient({ model: opts.model, maxTokens, send: opts.send });
+    ? new AnthropicClient({
+        model: opts.model,
+        maxTokens: maxTokens ?? 4096,
+        send: opts.send,
+      })
+    : new OpenAIClient({
+        model: opts.model,
+        maxTokens,
+        send: opts.send,
+      });
 }
 
 // ---- Mock (tests / dry runs) ------------------------------------------------

@@ -17,11 +17,13 @@ import type {
 } from "./types";
 import {
   ProjectSerializer,
+  SCHEMA_VERSION,
   normalizeMotionComposition,
   normalizeProjectCreationFields,
   normalizeProjectMotionFields,
 } from "./project-serializer";
 import { createCreationScene, createEmptyCreationState } from "../creation";
+import { UNIVERSAL_TRACKS_CAPABILITY } from "../timeline/timeline-items";
 
 const makeVideoLayer = (
   overrides: Partial<MotionVideoLayer> = {},
@@ -268,6 +270,44 @@ describe("normalizeProjectCreationFields", () => {
 });
 
 describe("ProjectSerializer round-trip", () => {
+  it("writes the universal-track reader requirement and preserves it", () => {
+    const serializer = new ProjectSerializer(new MemoryStorageEngine());
+    const project = makeProject({
+      capabilities: [UNIVERSAL_TRACKS_CAPABILITY],
+      minimumReaderVersion: "1.2.0",
+    });
+
+    const json = serializer.exportToJson(project);
+    const file = JSON.parse(json) as {
+      version: string;
+      minimumReaderVersion?: string;
+      capabilities?: string[];
+    };
+
+    expect(file.version).toBe(SCHEMA_VERSION);
+    expect(file.minimumReaderVersion).toBe("1.2.0");
+    expect(file.capabilities).toContain(UNIVERSAL_TRACKS_CAPABILITY);
+    expect(serializer.importFromJson(json).capabilities).toContain(
+      UNIVERSAL_TRACKS_CAPABILITY,
+    );
+  });
+
+  it("rejects a project that needs a newer reader", () => {
+    const serializer = new ProjectSerializer(new MemoryStorageEngine());
+    const json = JSON.stringify({
+      version: "9.0.0",
+      minimumReaderVersion: "9.0.0",
+      project: makeProject(),
+    });
+
+    expect(() => serializer.importFromJson(json)).toThrow(
+      /requires OpenReel project reader 9\.0\.0 or newer/,
+    );
+    expect(serializer.validateProjectJson(json)).toMatchObject({
+      valid: false,
+    });
+  });
+
   it("preserves audioClips and video layers through export/import", () => {
     const serializer = new ProjectSerializer(new MemoryStorageEngine());
     const composition = makeComposition({

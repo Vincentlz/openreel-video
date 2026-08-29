@@ -60,9 +60,10 @@ export function useClipContextMenuItems({
   }, [track.clips, clip.id, clip.startTime]);
 
   const mediaItem = getMediaItem(clip.mediaId);
-  const isVideo = track.type === "video";
-  const isAudio = track.type === "audio";
-  const isImage = track.type === "image";
+  const clipMediaType = mediaItem?.type ?? track.type;
+  const isVideo = clipMediaType === "video";
+  const isAudio = clipMediaType === "audio";
+  const isImage = clipMediaType === "image";
   const isVideoWithAudio =
     isVideo &&
     mediaItem?.type === "video" &&
@@ -83,7 +84,7 @@ export function useClipContextMenuItems({
   };
 
   const handleSelectTrackClips = () => {
-    const project = useProjectStore.getState().project;
+    const project = useProjectStore.getState().getFullProject();
     selectMultiple(getTimelineTrackSelection(project, track.id));
     onClose?.();
   };

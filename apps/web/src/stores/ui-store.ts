@@ -9,7 +9,6 @@ export type PanelId =
   | "audioMixer"
   | "colorGrading"
   | "subtitles"
-  | "ai"
   | "agentChat";
 
 export type SelectionType =
@@ -202,7 +201,6 @@ const DEFAULT_PANELS: Record<PanelId, PanelState> = {
   audioMixer: { visible: false, width: 300 },
   colorGrading: { visible: false, width: 400 },
   subtitles: { visible: false, width: 300 },
-  ai: { visible: false, width: 300 },
   agentChat: { visible: false, width: 380 },
 };
 

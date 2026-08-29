@@ -19,41 +19,32 @@ export type SubtitleSlice = Pick<
   | "getSubtitleStylePresets"
 >;
 
-export function createSubtitleSlice(set: Set, get: Get): SubtitleSlice {
+export function createSubtitleSlice(_set: Set, get: Get): SubtitleSlice {
   return {
     addSubtitle: async (subtitle, metadata) => {
       const { project, addTrack, createTextClip } = get();
 
       let captionsTrack = project.timeline.tracks.find(
-        (t) => t.type === "text" && t.name === "Captions",
+        (track) =>
+          track.role === "captions" || track.name === "Captions",
       );
 
       if (!captionsTrack) {
-        const result = await addTrack("text");
+        const existingTrackIds = new Set(
+          project.timeline.tracks.map((track) => track.id),
+        );
+        const result = await addTrack("video", undefined, {
+          mode: "standard",
+          role: "captions",
+          name: "Captions",
+        });
         if (!result?.success) return;
 
         const updatedProject = get().project;
-        const newTracks = updatedProject.timeline.tracks.filter(
-          (t) =>
-            t.type === "text" &&
-            !project.timeline.tracks.some((old) => old.id === t.id),
+        captionsTrack = updatedProject.timeline.tracks.find(
+          (track) =>
+            track.role === "captions" && !existingTrackIds.has(track.id),
         );
-        captionsTrack = newTracks[0];
-
-        if (captionsTrack) {
-          set((state) => ({
-            project: {
-              ...state.project,
-              timeline: {
-                ...state.project.timeline,
-                tracks: state.project.timeline.tracks.map((t) =>
-                  t.id === captionsTrack!.id ? { ...t, name: "Captions" } : t,
-                ),
-              },
-            },
-          }));
-          captionsTrack = { ...captionsTrack, name: "Captions" };
-        }
       }
 
       if (!captionsTrack) return;
@@ -170,7 +161,10 @@ export function createSubtitleSlice(set: Set, get: Get): SubtitleSlice {
       const { project } = get();
       const captionsTrackIds = new Set(
         project.timeline.tracks
-          .filter((track) => track.type === "text" && track.name === "Captions")
+          .filter(
+            (track) =>
+              track.role === "captions" || track.name === "Captions",
+          )
           .map((track) => track.id),
       );
       const subtitles = get()
@@ -208,7 +202,10 @@ export function createSubtitleSlice(set: Set, get: Get): SubtitleSlice {
       }
       const captionsTrackIds = new Set(
         get().project.timeline.tracks
-          .filter((track) => track.type === "text" && track.name === "Captions")
+          .filter(
+            (track) =>
+              track.role === "captions" || track.name === "Captions",
+          )
           .map((track) => track.id),
       );
       for (const clip of get().getAllTextClips()) {

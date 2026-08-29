@@ -24,6 +24,7 @@ import type {
   Transition,
   TransitionEdge,
 } from "@openreel/core";
+import { getMediaItemCapabilities } from "@openreel/core";
 import { useProjectStore } from "../../../stores/project-store";
 import { useEngineStore } from "../../../stores/engine-store";
 import { toast } from "../../../stores/notification-store";
@@ -932,13 +933,21 @@ export const ClipTransitionSection: React.FC<ClipTransitionSectionProps> = ({
 
   const timelineClipContext = useMemo(() => {
     for (const track of project.timeline.tracks) {
-      const sortedClips = [...track.clips].sort((clipA, clipB) => {
-        if (clipA.startTime !== clipB.startTime) {
-          return clipA.startTime - clipB.startTime;
-        }
+      const sortedClips = track.clips
+        .filter((clip) =>
+          getMediaItemCapabilities(
+            project.mediaLibrary.items.find(
+              (item) => item.id === clip.mediaId,
+            ),
+          ).visual,
+        )
+        .sort((clipA, clipB) => {
+          if (clipA.startTime !== clipB.startTime) {
+            return clipA.startTime - clipB.startTime;
+          }
 
-        return clipA.id.localeCompare(clipB.id);
-      });
+          return clipA.id.localeCompare(clipB.id);
+        });
       const clipIndex = sortedClips.findIndex((candidate) => candidate.id === clipId);
 
       if (clipIndex === -1) {
@@ -954,7 +963,6 @@ export const ClipTransitionSection: React.FC<ClipTransitionSectionProps> = ({
         currentClip,
         previousClip,
         nextClip,
-        trackType: track.type,
         introTransition: track.transitions.find(
           (transition) =>
             transition.clipAId === currentClip.id &&
@@ -985,7 +993,7 @@ export const ClipTransitionSection: React.FC<ClipTransitionSectionProps> = ({
     }
 
     return null;
-  }, [project.timeline.tracks, clipId]);
+  }, [project.timeline.tracks, project.mediaLibrary.items, clipId]);
 
   const clip = useMemo(() => {
     const regularClip = timelineClipContext?.currentClip;
@@ -1051,11 +1059,7 @@ export const ClipTransitionSection: React.FC<ClipTransitionSectionProps> = ({
   }, [timelineClipContext]);
 
   const edgeTransitions = useMemo<EdgeTransitionConfig[]>(() => {
-    if (
-      !timelineClipContext ||
-      (timelineClipContext.trackType !== "video" &&
-        timelineClipContext.trackType !== "image")
-    ) {
+    if (!timelineClipContext) {
       return [];
     }
 

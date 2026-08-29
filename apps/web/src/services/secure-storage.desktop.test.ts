@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   saveSecret,
   getSecret,
+  hasSecret,
   deleteSecret,
   isSessionUnlocked,
   isMasterPasswordSet,
@@ -46,6 +47,12 @@ describe("secure-storage desktop branch", () => {
   it("getSecret returns null when keychain has no entry", async () => {
     keychain.get.mockResolvedValueOnce(null);
     expect(await getSecret("missing")).toBeNull();
+  });
+
+  it("checks key existence without exposing it to the caller", async () => {
+    await expect(hasSecret("openai")).resolves.toBe(true);
+    keychain.get.mockResolvedValueOnce(null);
+    await expect(hasSecret("missing")).resolves.toBe(false);
   });
 
   it("deleteSecret routes to keychain.delete", async () => {

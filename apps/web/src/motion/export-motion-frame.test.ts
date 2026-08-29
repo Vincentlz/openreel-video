@@ -81,6 +81,7 @@ vi.mock("@openreel/core", () => ({
     renderAudio: audioEngineRenderAudioMock,
   }),
   isMotionLayerContentVisible: isMotionLayerContentVisibleMock,
+  trackHasAudioItems: () => false,
   motionEngine: {
     createInstance: vi.fn((composition, options) => ({
       id: "instance-1",

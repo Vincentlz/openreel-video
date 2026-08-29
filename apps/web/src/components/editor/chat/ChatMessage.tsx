@@ -1,12 +1,15 @@
 import type { JSX } from "react";
 import { Bot, User } from "@/icons/lucide-compat";
 import type { ChatMessage as ChatMessageData } from "../../../stores/chat-store";
+import { MarkdownMessage } from "./MarkdownMessage";
 import { ToolCallCard } from "./ToolCallCard";
 
 export function ChatMessage({
   message,
+  pending = false,
 }: {
   message: ChatMessageData;
+  pending?: boolean;
 }): JSX.Element {
   const isUser = message.role === "user";
 
@@ -20,9 +23,17 @@ export function ChatMessage({
         {isUser ? <User size={13} /> : <Bot size={13} />}
       </div>
       <div className="min-w-0 flex-1 space-y-2">
-        {message.text && (
+        {message.text && (isUser ? (
           <div className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-fg">
             {message.text}
+          </div>
+        ) : (
+          <MarkdownMessage text={message.text} />
+        ))}
+        {!isUser && pending && !message.text && message.toolCalls.length === 0 && (
+          <div className="flex items-center gap-1.5 py-1 text-[12px] text-fg-muted" role="status">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+            <span>Thinking…</span>
           </div>
         )}
         {message.toolCalls.length > 0 && (
@@ -30,6 +41,11 @@ export function ChatMessage({
             {message.toolCalls.map((call) => (
               <ToolCallCard key={call.id} call={call} />
             ))}
+          </div>
+        )}
+        {!isUser && message.notice && (
+          <div className="rounded-md border border-border bg-bg-2/70 px-2.5 py-2 text-[11px] leading-relaxed text-fg-2">
+            {message.notice}
           </div>
         )}
       </div>

@@ -536,16 +536,13 @@ export function createTextGraphicsSlice(
       const destinationTrack = get().project.timeline.tracks.find(
         (track) => track.id === destinationTrackId,
       );
-      const expectedTrackType = kind === "text" ? "text" : "graphics";
       if (
         !destinationTrack ||
-        destinationTrack.locked ||
-        destinationTrack.type !== expectedTrackType
+        destinationTrack.locked
       ) {
         console.warn("[ProjectStore] Cannot paste overlay to destination track", {
           kind,
           destinationTrackId,
-          destinationTrackType: destinationTrack?.type,
           destinationTrackLocked: destinationTrack?.locked,
         });
         return null;

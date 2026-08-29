@@ -57,8 +57,8 @@ function resolveApiKey(provider: LlmProvider): string {
 }
 
 const DEFAULT_MODEL: Record<LlmProvider, string> = {
-  anthropic: "claude-sonnet-4-20250514",
-  openai: "gpt-4o",
+  anthropic: "claude-sonnet-5",
+  openai: "gpt-5.6-sol",
 };
 
 const USAGE = `openreel-agent — headless project editing

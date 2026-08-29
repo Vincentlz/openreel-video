@@ -19,7 +19,7 @@ export interface ExportQueueOptions {
 }
 
 /**
- * Drives a batch of export/render jobs through a JobRunner (e.g. the GPU worker)
+ * Drives a batch of export/render jobs through a JobRunner
  * with a bounded worker pool — the "export these N variants" capability. Results
  * are returned in input order; a failing job never aborts the rest.
  */

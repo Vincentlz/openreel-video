@@ -18,6 +18,7 @@ export * from "./llm";
 export { runTurn } from "./loop";
 export type { RunTurnInput, RunTurnResult, StopReason } from "./loop";
 export { buildSystemPrompt } from "./system-prompt";
+export { selectToolsForPrompt, DEFAULT_AGENT_TOOL_LIMIT } from "./tool-router";
 export { toLogRecord, createEventLogger, collectEvents } from "./observability";
 export type { AgentLogRecord } from "./observability";
 export { generateCapabilityMarkdown } from "./gen-docs";

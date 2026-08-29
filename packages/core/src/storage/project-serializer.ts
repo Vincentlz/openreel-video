@@ -16,6 +16,10 @@ import { normalizeMotionCamera } from "../motion/motion-camera";
 import { normalizeMotionLights } from "../motion/motion-lights";
 import { normalizeMotionTracks } from "../motion/motion-tracking";
 import { normalizeCreationState } from "../creation";
+import {
+  UNIVERSAL_TRACKS_MIN_READER_VERSION,
+  projectUsesUniversalTracks,
+} from "../timeline/timeline-items";
 
 const MOTION_SHADER_CATEGORIES: ReadonlySet<MotionShaderCategory> = new Set([
   "fill",
@@ -75,10 +79,52 @@ export function normalizeGeneratedShaders(
 
 export interface ProjectFile {
   readonly version: string;
+  readonly minimumReaderVersion?: string;
+  readonly capabilities?: readonly string[];
   readonly project: Project;
 }
 
-export const SCHEMA_VERSION = "1.0.0";
+export const SCHEMA_VERSION = "1.2.0";
+
+function compareVersions(left: string, right: string): number {
+  const parse = (value: string): number[] =>
+    value
+      .split(".")
+      .slice(0, 3)
+      .map((part) => Number.parseInt(part, 10) || 0);
+  const leftParts = parse(left);
+  const rightParts = parse(right);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+function getProjectFileCompatibility(project: Project): Pick<
+  ProjectFile,
+  "minimumReaderVersion" | "capabilities"
+> {
+  const capabilities = project.capabilities ?? [];
+  return {
+    minimumReaderVersion: projectUsesUniversalTracks(project)
+      ? UNIVERSAL_TRACKS_MIN_READER_VERSION
+      : project.minimumReaderVersion,
+    capabilities: capabilities.length > 0 ? capabilities : undefined,
+  };
+}
+
+function assertReaderCompatibility(projectFile: ProjectFile): void {
+  const minimumReaderVersion = projectFile.minimumReaderVersion;
+  if (
+    minimumReaderVersion &&
+    compareVersions(minimumReaderVersion, SCHEMA_VERSION) > 0
+  ) {
+    throw new Error(
+      `This project requires OpenReel project reader ${minimumReaderVersion} or newer. Current reader: ${SCHEMA_VERSION}.`,
+    );
+  }
+}
 
 function normalizeMotionAudioClips(
   composition: Pick<MotionComposition, "audioClips">,
@@ -192,6 +238,7 @@ export class ProjectSerializer {
   exportToJson(project: Project): string {
     const projectFile: ProjectFile = {
       version: SCHEMA_VERSION,
+      ...getProjectFileCompatibility(project),
       project: this.stripMediaBlobs(project),
     };
     return JSON.stringify(projectFile, null, 2);
@@ -199,6 +246,7 @@ export class ProjectSerializer {
 
   importFromJson(json: string): Project {
     const projectFile = JSON.parse(json) as ProjectFile;
+    assertReaderCompatibility(projectFile);
 
     if (projectFile.version !== SCHEMA_VERSION) {
       return this.migrateProject(projectFile);
@@ -230,6 +278,7 @@ export class ProjectSerializer {
   exportToJsonWithMetadata(project: Project, description?: string): string {
     const projectFile: ProjectFileWithMetadata = {
       version: SCHEMA_VERSION,
+      ...getProjectFileCompatibility(project),
       project: this.stripMediaBlobs(project),
       metadata: {
         exportedAt: Date.now(),
@@ -257,6 +306,16 @@ export class ProjectSerializer {
         result.warnings.push(
           `Version mismatch: expected ${SCHEMA_VERSION}, got ${projectFile.version}`,
         );
+      }
+
+      if (
+        projectFile.minimumReaderVersion &&
+        compareVersions(projectFile.minimumReaderVersion, SCHEMA_VERSION) > 0
+      ) {
+        result.errors.push(
+          `Project requires reader ${projectFile.minimumReaderVersion} or newer`,
+        );
+        result.valid = false;
       }
 
       if (!projectFile.project) {

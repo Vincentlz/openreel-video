@@ -6,6 +6,11 @@ import {
 } from "@openreel/ui";
 import { ToolcraftTextInputControl } from "@openreel/ui";
 import type { Track } from "@openreel/core";
+import {
+  getTrackItems,
+  trackHasAudioItems,
+  trackHasVisualItems,
+} from "@openreel/core";
 import { useProjectStore } from "../../../stores/project-store";
 import { useTimelineStore } from "../../../stores/timeline-store";
 import { getTrackInfo } from "./utils";
@@ -46,24 +51,18 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({
   const inputRef = useRef<HTMLInputElement>(null);
 
   const trackInfo = getTrackInfo(track, index);
-  const isVisual =
-    track.type === "video" ||
-    track.type === "image" ||
-    track.type === "text" ||
-    track.type === "graphics";
-  const isAudio = track.type === "audio";
+  const isVisual = trackHasVisualItems(project, track.id);
+  const isAudio = trackHasAudioItems(project, track.id);
   const hasSoloedAudioTrack = project.timeline.tracks.some(
-    (candidate) => candidate.type === "audio" && candidate.solo,
+    (candidate) =>
+      trackHasAudioItems(project, candidate.id) && candidate.solo,
   );
   const effectivelyMuted =
     isAudio && (track.muted || (hasSoloedAudioTrack && !track.solo));
   const groupCandidates = project.timeline.tracks.filter(
     (candidate) =>
       candidate.id !== track.id &&
-      candidate.groupId !== track.groupId &&
-      (track.type === "text"
-        ? candidate.type !== "text" && candidate.type !== "graphics"
-        : candidate.type === "text"),
+      candidate.groupId !== track.groupId,
   );
 
   const handleRemoveTrack = async () => {
@@ -76,15 +75,15 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({
 
   // Only enable "Remove Gaps" if there's actually a gap on this track.
   const hasGaps = React.useMemo(() => {
-    if (track.clips.length === 0) return false;
-    const sorted = [...track.clips].sort((a, b) => a.startTime - b.startTime);
+    const sorted = getTrackItems(project, track.id);
+    if (sorted.length === 0) return false;
     if (sorted[0].startTime > 0.0001) return true;
     for (let i = 1; i < sorted.length; i++) {
       const prevEnd = sorted[i - 1].startTime + sorted[i - 1].duration;
       if (sorted[i].startTime - prevEnd > 0.0001) return true;
     }
     return false;
-  }, [track.clips]);
+  }, [project, track.id]);
 
   const startRename = () => {
     setRenameValue(track.name);

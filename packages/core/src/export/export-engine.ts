@@ -25,6 +25,11 @@ import { getMediaEngine } from "../media/mediabunny-engine";
 import { getWavEncoder } from "../wasm/wav";
 import type { EncoderBackend, EncoderBackendFactory } from "./encoder-backend";
 import { WebCodecsBackend } from "./webcodecs-backend";
+import { resolveWebCodecsExportLimits } from "./webcodecs-limits";
+import {
+  getMediaItemCapabilities,
+  trackHasAudioItems,
+} from "../timeline/timeline-items";
 
 export class ExportEngine {
   private static readonly AUDIO_EXPORT_CHUNK_DURATION_SECONDS = 15;
@@ -161,26 +166,10 @@ export class ExportEngine {
     const timelineDuration = this.calculateTimelineDuration(timeline);
 
     if (backend.requiresWebCodecsClamping) {
-      const isMemoryIntensiveCodec =
-        fullSettings.codec === "vp9" ||
-        fullSettings.codec === "av1" ||
-        fullSettings.codec === "h265";
-      const isLongVideo = timelineDuration > 120;
-
-      let maxW = isMemoryIntensiveCodec ? 1920 : 3840;
-      let maxH = isMemoryIntensiveCodec ? 1080 : 2160;
-      if (isLongVideo) {
-        maxW = Math.min(maxW, 1920);
-        maxH = Math.min(maxH, 1080);
-      }
-      if (fullSettings.width > maxW || fullSettings.height > maxH) {
-        const scale = Math.min(maxW / fullSettings.width, maxH / fullSettings.height, 1);
-        fullSettings.width = Math.round(fullSettings.width * scale / 2) * 2;
-        fullSettings.height = Math.round(fullSettings.height * scale / 2) * 2;
-      }
-      if (isLongVideo && fullSettings.frameRate > 30) {
-        fullSettings.frameRate = 30;
-      }
+      Object.assign(
+        fullSettings,
+        resolveWebCodecsExportLimits(fullSettings, timelineDuration).settings,
+      );
     }
 
     this.abortController = new AbortController();
@@ -237,12 +226,16 @@ export class ExportEngine {
       const mediaEngine = getMediaEngine();
       const videoMediaIds: string[] = [];
       for (const track of project.timeline.tracks) {
-        if (track.type !== "video") continue;
         for (const clip of track.clips) {
           const mediaItem = project.mediaLibrary.items.find(
             (m) => m.id === clip.mediaId,
           );
-          if (mediaItem?.blob && !videoMediaIds.includes(mediaItem.id)) {
+          if (
+            mediaItem?.blob &&
+            getMediaItemCapabilities(mediaItem).visual &&
+            mediaItem.type === "video" &&
+            !videoMediaIds.includes(mediaItem.id)
+          ) {
             videoMediaIds.push(mediaItem.id);
             try {
               await mediaEngine.createExportDecoder(
@@ -906,10 +899,7 @@ export class ExportEngine {
     const { timeline } = project;
 
     const hasAudio = timeline.tracks.some(
-      (track) =>
-        (track.type === "audio" || track.type === "video") &&
-        !track.muted &&
-        track.clips.length > 0,
+      (track) => !track.muted && trackHasAudioItems(project, track.id),
     );
 
     if (!hasAudio) {

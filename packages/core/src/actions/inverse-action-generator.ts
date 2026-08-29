@@ -15,7 +15,19 @@ import type {
 } from "../types/actions";
 import type { Project, MediaItem } from "../types/project";
 import type { Track, Clip, Transition } from "../types/timeline";
+import type { TextClip } from "../text/types";
+import type { ShapeClip, StickerClip, SVGClip } from "../graphics/types";
+import type { AdjustmentLayer } from "../video/adjustment-layer-engine";
+import type { MotionCompositionInstance } from "../motion/types";
 import { getActionHandler } from "./registry";
+
+type TrackOwnedProjectItem =
+  | TextClip
+  | ShapeClip
+  | SVGClip
+  | StickerClip
+  | AdjustmentLayer
+  | MotionCompositionInstance;
 
 export class InverseActionGenerator {
   generate(action: Action, projectBefore: Project): Action | null {
@@ -256,6 +268,26 @@ export class InverseActionGenerator {
         return this.createInverseAction(action, "track/restore", {
           track: this.cloneTrack(removedTrack),
           position,
+          items: {
+            textClips: this.cloneTrackItems(projectBefore.textClips, action.params.trackId),
+            shapeClips: this.cloneTrackItems(
+              projectBefore.shapeClips,
+              action.params.trackId,
+            ),
+            svgClips: this.cloneTrackItems(projectBefore.svgClips, action.params.trackId),
+            stickerClips: this.cloneTrackItems(
+              projectBefore.stickerClips,
+              action.params.trackId,
+            ),
+            adjustmentLayers: this.cloneTrackItems(
+              projectBefore.adjustmentLayers,
+              action.params.trackId,
+            ),
+            motionInstances: this.cloneTrackItems(
+              projectBefore.motionInstances,
+              action.params.trackId,
+            ),
+          },
         });
       }
 
@@ -844,17 +876,20 @@ export class InverseActionGenerator {
     };
   }
 
+  private cloneTrackItems<T extends TrackOwnedProjectItem>(
+    items: readonly T[] | undefined,
+    trackId: string,
+  ): T[] {
+    return (items ?? [])
+      .filter((item) => item.trackId === trackId)
+      .map((item) => structuredClone(item));
+  }
+
   private cloneTrack(track: Track): Record<string, unknown> {
     return {
-      id: track.id,
-      type: track.type,
-      name: track.name,
+      ...(track as unknown as Record<string, unknown>),
       clips: track.clips.map((c) => this.cloneClip(c)),
       transitions: track.transitions?.map((t) => ({ ...t })) ?? [],
-      locked: track.locked,
-      hidden: track.hidden,
-      muted: track.muted,
-      solo: track.solo,
     };
   }
 

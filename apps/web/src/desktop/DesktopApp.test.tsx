@@ -44,7 +44,14 @@ function mockHasProject(value: boolean): void {
 }
 
 beforeEach(() => {
-  useUIStore.setState({ desktopPage: "edit" });
+  const panels = useUIStore.getState().panels;
+  useUIStore.setState({
+    desktopPage: "edit",
+    panels: {
+      ...panels,
+      agentChat: { ...panels.agentChat, visible: false },
+    },
+  });
   useSettingsStore.setState({ settingsOpen: false, settingsTab: "general" });
   (window as unknown as { openreel: unknown }).openreel = {
     platform: "desktop",
@@ -88,6 +95,21 @@ describe("DesktopApp", () => {
     expect(
       motionView.queryByRole("button", { name: "Video Export" }),
     ).toBeNull();
+  });
+
+  it("toggles the AI Editor side panel from the desktop title bar", () => {
+    mockHasProject(true);
+    const view = render(<DesktopApp />);
+    const button = view.getByRole("button", { name: "AI Editor" });
+
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(button);
+
+    expect(useUIStore.getState().panels.agentChat.visible).toBe(true);
+    expect(button).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(button);
+    expect(useUIStore.getState().panels.agentChat.visible).toBe(false);
   });
 
   it("keeps settings reachable from the desktop title bar", () => {

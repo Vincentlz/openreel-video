@@ -16,6 +16,7 @@ import {
   type CutMode,
   type BeatAnalysisResult,
   type Clip,
+  getMediaItemCapabilities,
 } from "@openreel/core";
 
 interface AutoEditPanelProps {
@@ -34,22 +35,33 @@ export const AutoEditPanel: React.FC<AutoEditPanelProps> = ({ onClose }) => {
   const audioClips = useMemo(() => {
     const clips: Clip[] = [];
     for (const track of project.timeline.tracks) {
-      if (track.type === "audio") {
-        clips.push(...track.clips);
-      }
+      clips.push(
+        ...track.clips.filter((clip) =>
+          getMediaItemCapabilities(
+            project.mediaLibrary.items.find(
+              (mediaItem) => mediaItem.id === clip.mediaId,
+            ),
+          ).audio,
+        ),
+      );
     }
     return clips;
-  }, [project.timeline.tracks]);
+  }, [project]);
 
   const videoClips = useMemo(() => {
     const clips: Clip[] = [];
     for (const track of project.timeline.tracks) {
-      if (track.type === "video") {
-        clips.push(...track.clips);
-      }
+      clips.push(
+        ...track.clips.filter(
+          (clip) =>
+            project.mediaLibrary.items.find(
+              (mediaItem) => mediaItem.id === clip.mediaId,
+            )?.type === "video",
+        ),
+      );
     }
     return clips;
-  }, [project.timeline.tracks]);
+  }, [project]);
 
   const [selectedAudioClipId, setSelectedAudioClipId] = useState<string>(
     audioClips[0]?.id ?? "",
@@ -140,7 +152,10 @@ export const AutoEditPanel: React.FC<AutoEditPanelProps> = ({ onClose }) => {
     if (!preview || preview.cuts.length === 0) return;
 
     const tracks = [...project.timeline.tracks];
-    const videoTrackIndex = tracks.findIndex((t) => t.type === "video");
+    const sourceClipIds = new Set(videoClips.map((clip) => clip.id));
+    const videoTrackIndex = tracks.findIndex((track) =>
+      track.clips.some((clip) => sourceClipIds.has(clip.id)),
+    );
     if (videoTrackIndex === -1) return;
 
     const newClips: Clip[] = preview.cuts.map((cut, index) => {

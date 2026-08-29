@@ -63,6 +63,22 @@ describe("runTurn", () => {
     expect(host.getProject().timeline.tracks[0].clips[0].speed ?? 1).toBe(1);
   });
 
+  it("surfaces a provider output-limit stop as a budget stop", async () => {
+    const host = new HeadlessHost(makeProjectWithClip());
+    const result = await runTurn({
+      host,
+      llm: new MockLLMClient([
+        { text: "A partial response", stopReason: "max_tokens", toolUses: [] },
+      ]),
+      tools,
+      messages: userMsg("describe the project"),
+    });
+
+    expect(result.text).toBe("A partial response");
+    expect(result.stoppedReason).toBe("budget");
+    expect(result.committed).toBe(true);
+  });
+
   it("gates destructive tools and honors rejection", async () => {
     const host = new HeadlessHost(makeProjectWithClip());
     const script: LLMResponse[] = [

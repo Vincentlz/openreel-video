@@ -35,6 +35,10 @@ import type {
 } from "../utils/immutable-updates";
 import type { BlendMode } from "../video/types";
 import type { EmphasisAnimation } from "../graphics/types";
+import type { ShapeClip, StickerClip, SVGClip } from "../graphics/types";
+import type { TextClip } from "../text/types";
+import type { AdjustmentLayer } from "../video/adjustment-layer-engine";
+import type { MotionCompositionInstance } from "../motion/types";
 import type { ClipColorGrading } from "../video/color-grading-engine";
 import {
   registerMotionShader,
@@ -48,6 +52,79 @@ import { InverseActionGenerator } from "./inverse-action-generator";
 import { getActionHandler } from "./registry";
 import "./handlers";
 import { calculateProjectDuration } from "../timeline/project-duration";
+
+interface MutableProjectItems {
+  textClips?: TextClip[];
+  shapeClips?: ShapeClip[];
+  svgClips?: SVGClip[];
+  stickerClips?: StickerClip[];
+  adjustmentLayers?: AdjustmentLayer[];
+  motionInstances?: MotionCompositionInstance[];
+}
+
+interface TrackOwnedItems {
+  textClips: TextClip[];
+  shapeClips: ShapeClip[];
+  svgClips: SVGClip[];
+  stickerClips: StickerClip[];
+  adjustmentLayers: AdjustmentLayer[];
+  motionInstances: MotionCompositionInstance[];
+}
+
+function getTrackOwnedItems(project: Project, trackId: string): TrackOwnedItems {
+  return {
+    textClips: (project.textClips ?? []).filter((item) => item.trackId === trackId),
+    shapeClips: (project.shapeClips ?? []).filter((item) => item.trackId === trackId),
+    svgClips: (project.svgClips ?? []).filter((item) => item.trackId === trackId),
+    stickerClips: (project.stickerClips ?? []).filter(
+      (item) => item.trackId === trackId,
+    ),
+    adjustmentLayers: (project.adjustmentLayers ?? []).filter(
+      (item) => item.trackId === trackId,
+    ),
+    motionInstances: (project.motionInstances ?? []).filter(
+      (item) => item.trackId === trackId,
+    ),
+  };
+}
+
+function removeTrackOwnedItems(project: Project, trackId: string): void {
+  const mutable = project as Project & MutableProjectItems;
+  mutable.textClips = (project.textClips ?? []).filter(
+    (item) => item.trackId !== trackId,
+  );
+  mutable.shapeClips = (project.shapeClips ?? []).filter(
+    (item) => item.trackId !== trackId,
+  );
+  mutable.svgClips = (project.svgClips ?? []).filter(
+    (item) => item.trackId !== trackId,
+  );
+  mutable.stickerClips = (project.stickerClips ?? []).filter(
+    (item) => item.trackId !== trackId,
+  );
+  mutable.adjustmentLayers = (project.adjustmentLayers ?? []).filter(
+    (item) => item.trackId !== trackId,
+  );
+  mutable.motionInstances = (project.motionInstances ?? []).filter(
+    (item) => item.trackId !== trackId,
+  );
+}
+
+function restoreTrackOwnedItems(project: Project, items: TrackOwnedItems): void {
+  const mutable = project as Project & MutableProjectItems;
+  mutable.textClips = [...(project.textClips ?? []), ...items.textClips];
+  mutable.shapeClips = [...(project.shapeClips ?? []), ...items.shapeClips];
+  mutable.svgClips = [...(project.svgClips ?? []), ...items.svgClips];
+  mutable.stickerClips = [...(project.stickerClips ?? []), ...items.stickerClips];
+  mutable.adjustmentLayers = [
+    ...(project.adjustmentLayers ?? []),
+    ...items.adjustmentLayers,
+  ];
+  mutable.motionInstances = [
+    ...(project.motionInstances ?? []),
+    ...items.motionInstances,
+  ];
+}
 
 export class ActionExecutor {
   private validator: ActionValidator;
@@ -251,6 +328,7 @@ export class ActionExecutor {
         lastAddedIds: this.lastAddedIds,
       });
       this.recalculateTimelineDuration(project);
+      this.markProjectModified(project);
       return;
     }
 
@@ -280,11 +358,16 @@ export class ActionExecutor {
 
     // Recompute timeline duration from clips after any action that may affect it
     this.recalculateTimelineDuration(project);
+    this.markProjectModified(project);
   }
 
   private recalculateTimelineDuration(project: Project): void {
     (project.timeline as MutableTimeline).duration =
       calculateProjectDuration(project);
+  }
+
+  private markProjectModified(project: Project): void {
+    (project as { modifiedAt: number }).modifiedAt = Date.now();
   }
 
   private applyProjectAction(action: ProjectAction, project: Project): void {
@@ -422,6 +505,9 @@ export class ActionExecutor {
           trackType: string;
           position?: number;
           trackId?: string;
+          mode?: "standard";
+          role?: Track["role"];
+          name?: string;
         };
         const trackNames: Record<string, string> = {
           video: "Video",
@@ -431,13 +517,23 @@ export class ActionExecutor {
           graphics: "Graphics",
         };
         const trackCount =
-          timeline.tracks.filter(
-            (t: MutableTrack) => t.type === params.trackType,
+          timeline.tracks.filter((track: MutableTrack) =>
+            params.mode === "standard"
+              ? track.mode === "standard"
+              : track.type === params.trackType,
           ).length + 1;
         const newTrack: MutableTrack = {
           id: params.trackId ?? `track-${crypto.randomUUID()}`,
           type: params.trackType as Track["type"],
-          name: `${trackNames[params.trackType] || params.trackType} ${trackCount}`,
+          mode: params.mode,
+          role: params.role,
+          name:
+            params.name ??
+            `${
+              params.mode === "standard"
+                ? "Track"
+                : trackNames[params.trackType] || params.trackType
+            } ${trackCount}`,
           clips: [],
           transitions: [],
           locked: false,
@@ -465,6 +561,8 @@ export class ActionExecutor {
           sourceTrackId: string;
           position?: number;
           trackId?: string;
+          itemIdMap?: Record<string, string>;
+          transitionIdMap?: Record<string, string>;
         };
         const sourceIndex = timeline.tracks.findIndex(
           (track: MutableTrack) => track.id === params.sourceTrackId,
@@ -472,12 +570,33 @@ export class ActionExecutor {
         if (sourceIndex < 0) break;
         const source = timeline.tracks[sourceIndex];
         const trackId = params.trackId ?? `track-${crypto.randomUUID()}`;
-        const clipIdMap = new Map(
-          source.clips.map((clip) => [
-            clip.id,
-            `clip-${crypto.randomUUID()}`,
+        params.trackId = trackId;
+        const ownedItems = getTrackOwnedItems(project, source.id);
+        const sourceItemIds = [
+          ...source.clips.map((clip) => clip.id),
+          ...ownedItems.textClips.map((item) => item.id),
+          ...ownedItems.shapeClips.map((item) => item.id),
+          ...ownedItems.svgClips.map((item) => item.id),
+          ...ownedItems.stickerClips.map((item) => item.id),
+          ...ownedItems.adjustmentLayers.map((item) => item.id),
+          ...ownedItems.motionInstances.map((item) => item.id),
+        ];
+        params.itemIdMap ??= Object.fromEntries(
+          sourceItemIds.map((id) => [id, `item-${crypto.randomUUID()}`]),
+        );
+        params.transitionIdMap ??= Object.fromEntries(
+          source.transitions.map((transition) => [
+            transition.id,
+            `transition-${crypto.randomUUID()}`,
           ]),
         );
+        const duplicateItem = <T extends { id: string; trackId?: string }>(
+          item: T,
+        ): T => ({
+          ...structuredClone(item),
+          id: params.itemIdMap![item.id]!,
+          trackId,
+        });
         const names = new Set(timeline.tracks.map((track) => track.name));
         const baseName = `${source.name} Copy`;
         let name = baseName;
@@ -492,16 +611,16 @@ export class ActionExecutor {
           name,
           clips: source.clips.map((clip) => ({
             ...structuredClone(clip),
-            id: clipIdMap.get(clip.id)!,
+            id: params.itemIdMap![clip.id]!,
             trackId,
           })),
           transitions: source.transitions.map((transition) => ({
             ...structuredClone(transition),
-            id: `transition-${crypto.randomUUID()}`,
+            id: params.transitionIdMap![transition.id]!,
             clipAId:
-              clipIdMap.get(transition.clipAId) ?? transition.clipAId,
+              params.itemIdMap![transition.clipAId] ?? transition.clipAId,
             clipBId: transition.clipBId
-              ? (clipIdMap.get(transition.clipBId) ?? transition.clipBId)
+              ? (params.itemIdMap![transition.clipBId] ?? transition.clipBId)
               : undefined,
           })),
         };
@@ -511,6 +630,22 @@ export class ActionExecutor {
           duplicate,
           ...timeline.tracks.slice(position),
         ];
+        restoreTrackOwnedItems(project, {
+          textClips: ownedItems.textClips.map(duplicateItem),
+          shapeClips: ownedItems.shapeClips.map(duplicateItem),
+          svgClips: ownedItems.svgClips.map(duplicateItem),
+          stickerClips: ownedItems.stickerClips.map(duplicateItem),
+          adjustmentLayers: ownedItems.adjustmentLayers.map((layer) => ({
+            ...duplicateItem(layer),
+            affectedTracks:
+              layer.affectedTracks === "all"
+                ? "all"
+                : layer.affectedTracks.map((affectedTrackId) =>
+                    affectedTrackId === source.id ? trackId : affectedTrackId,
+                  ),
+          })),
+          motionInstances: ownedItems.motionInstances.map(duplicateItem),
+        });
         this.lastAddedIds.set("track", trackId);
         break;
       }
@@ -520,16 +655,24 @@ export class ActionExecutor {
         timeline.tracks = timeline.tracks.filter(
           (t: MutableTrack) => t.id !== params.trackId,
         );
+        removeTrackOwnedItems(project, params.trackId);
         break;
       }
 
       case "track/restore": {
-        const params = action.params as { track: Track; position: number };
+        const params = action.params as {
+          track: Track;
+          position: number;
+          items?: TrackOwnedItems;
+        };
         timeline.tracks = [
           ...timeline.tracks.slice(0, params.position),
           params.track,
           ...timeline.tracks.slice(params.position),
         ];
+        if (params.items) {
+          restoreTrackOwnedItems(project, params.items);
+        }
         break;
       }
 
@@ -672,6 +815,7 @@ export class ActionExecutor {
           reversed?: boolean;
           audioTrackIndex?: number;
           sourceClip?: Clip;
+          clipId?: string;
         };
         const track = timeline.tracks.find(
           (t: MutableTrack) => t.id === params.trackId,
@@ -698,12 +842,12 @@ export class ActionExecutor {
           const newClip = params.sourceClip
             ? {
                 ...structuredClone(params.sourceClip),
-                id: crypto.randomUUID(),
+                id: params.clipId ?? crypto.randomUUID(),
                 trackId: params.trackId,
                 startTime: params.startTime,
               }
             : {
-                id: crypto.randomUUID(),
+                id: params.clipId ?? crypto.randomUUID(),
                 mediaId: params.mediaId,
                 trackId: params.trackId,
                 startTime: params.startTime,
@@ -726,6 +870,7 @@ export class ActionExecutor {
                   ? { audioTrackIndex: params.audioTrackIndex }
                   : {}),
               };
+          params.clipId = newClip.id;
           track.clips = [...track.clips, newClip];
           this.lastAddedIds.set("clip", newClip.id);
         }

@@ -34,6 +34,7 @@ import { KieAIImageDialog } from "./kieai/KieAIImageDialog";
 import { loadMediaBlob } from "../../services/media-storage";
 import { useKieAIStore } from "../../stores/kieai-store";
 import { StickerPickerPanel } from "./inspector/StickerPickerPanel";
+import { insertTimelineOverlay } from "../../stores/project/insert-timeline-overlay";
 
 const formatDuration = (seconds: number): string => {
   const mins = Math.floor(seconds / 60);
@@ -1252,30 +1253,24 @@ export const AssetsPanel: React.FC = () => {
                         key={shape.type}
                         label={shape.label}
                         onClick={async () => {
-                          const state = useProjectStore.getState();
-                          const { createShapeClip, addTrack } = state;
-                          const tracksBefore = state.project.timeline.tracks;
-                          await addTrack("graphics", 0);
-                          const tracksAfter =
-                            useProjectStore.getState().project.timeline.tracks;
-                          const newGraphicsTrack = tracksAfter.find(
-                            (t) =>
-                              t.type === "graphics" &&
-                              !tracksBefore.some((bt) => bt.id === t.id),
+                          const created = await insertTimelineOverlay(
+                            playheadPosition,
+                            5,
+                            (trackId) =>
+                              useProjectStore
+                                .getState()
+                                .createShapeClip(
+                                  trackId,
+                                  playheadPosition,
+                                  shape.type,
+                                ),
                           );
-                          if (newGraphicsTrack) {
-                            const created = createShapeClip(
-                              newGraphicsTrack.id,
-                              playheadPosition,
-                              shape.type,
-                            );
-                            if (created) {
-                              select({
-                                type: "shape-clip",
-                                id: created.id,
-                                trackId: newGraphicsTrack.id,
-                              });
-                            }
+                          if (created) {
+                            select({
+                              type: "shape-clip",
+                              id: created.id,
+                              trackId: created.trackId,
+                            });
                           }
                         }}
                         className="aspect-square bg-background-tertiary rounded-lg border border-border hover:border-primary/50 hover:bg-primary/5 transition-all flex flex-col items-center justify-center gap-1 group"
@@ -1309,38 +1304,30 @@ export const AssetsPanel: React.FC = () => {
                         key={mesh.type}
                         label={mesh.label}
                         onClick={async () => {
-                          const state = useProjectStore.getState();
-                          const { createShapeClip, addTrack, updateClipRotate3D } = state;
-                          const tracksBefore = state.project.timeline.tracks;
-                          await addTrack("graphics", 0);
-                          const tracksAfter =
-                            useProjectStore.getState().project.timeline.tracks;
-                          const newGraphicsTrack = tracksAfter.find(
-                            (t) =>
-                              t.type === "graphics" &&
-                              !tracksBefore.some((bt) => bt.id === t.id),
+                          const created = await insertTimelineOverlay(
+                            playheadPosition,
+                            5,
+                            (trackId) =>
+                              useProjectStore
+                                .getState()
+                                .createShapeClip(
+                                  trackId,
+                                  playheadPosition,
+                                  mesh.type,
+                                ),
                           );
-                          if (newGraphicsTrack) {
-                            const created = createShapeClip(
-                              newGraphicsTrack.id,
-                              playheadPosition,
-                              mesh.type,
+                          // Nudge the rotation so the 3D depth is visible from
+                          // the get-go (otherwise a head-on cube looks flat).
+                          if (created) {
+                            useProjectStore.getState().updateClipRotate3D(
+                              created.id,
+                              { x: -18, y: 28, z: 0 },
                             );
-                            // Nudge the rotation so the 3D depth is
-                            // visible from the get-go (otherwise a
-                            // head-on cube looks like a flat square).
-                            if (created) {
-                              updateClipRotate3D(created.id, {
-                                x: -18,
-                                y: 28,
-                                z: 0,
-                              });
-                              select({
-                                type: "shape-clip",
-                                id: created.id,
-                                trackId: newGraphicsTrack.id,
-                              });
-                            }
+                            select({
+                              type: "shape-clip",
+                              id: created.id,
+                              trackId: created.trackId,
+                            });
                           }
                         }}
                         className="aspect-square bg-background-tertiary rounded-lg border border-border hover:border-primary/50 hover:bg-primary/5 transition-all flex flex-col items-center justify-center gap-1 group"
@@ -1370,30 +1357,20 @@ export const AssetsPanel: React.FC = () => {
                         const file = (e.target as HTMLInputElement).files?.[0];
                         if (file) {
                           const content = await file.text();
-                          const state = useProjectStore.getState();
-                          const { importSVG, addTrack } = state;
-                          const tracksBefore = state.project.timeline.tracks;
-                          await addTrack("graphics", 0);
-                          const tracksAfter =
-                            useProjectStore.getState().project.timeline.tracks;
-                          const newGraphicsTrack = tracksAfter.find(
-                            (t) =>
-                              t.type === "graphics" &&
-                              !tracksBefore.some((bt) => bt.id === t.id),
+                          const created = await insertTimelineOverlay(
+                            playheadPosition,
+                            5,
+                            (trackId) =>
+                              useProjectStore
+                                .getState()
+                                .importSVG(content, trackId, playheadPosition),
                           );
-                          if (newGraphicsTrack) {
-                            const created = importSVG(
-                              content,
-                              newGraphicsTrack.id,
-                              playheadPosition,
-                            );
-                            if (created) {
-                              select({
-                                type: "shape-clip",
-                                id: created.id,
-                                trackId: newGraphicsTrack.id,
-                              });
-                            }
+                          if (created) {
+                            select({
+                              type: "shape-clip",
+                              id: created.id,
+                              trackId: created.trackId,
+                            });
                           }
                         }
                       };
@@ -1426,32 +1403,26 @@ export const AssetsPanel: React.FC = () => {
                 <PanelButton
                   label="Add Title"
                   onClick={async () => {
-                    const state = useProjectStore.getState();
-                    const { createTextClip, addTrack } = state;
-                    const tracksBefore = state.project.timeline.tracks;
-                    await addTrack("text", 0);
-                    const tracksAfter =
-                      useProjectStore.getState().project.timeline.tracks;
-                    const newTextTrack = tracksAfter.find(
-                      (t) =>
-                        t.type === "text" &&
-                        !tracksBefore.some((bt) => bt.id === t.id),
+                    const created = await insertTimelineOverlay(
+                      playheadPosition,
+                      5,
+                      (trackId) =>
+                        useProjectStore
+                          .getState()
+                          .createTextClip(
+                            trackId,
+                            playheadPosition,
+                            "New Title",
+                            5,
+                            DEFAULT_TITLE_STYLE,
+                          ),
                     );
-                    if (newTextTrack) {
-                      const created = createTextClip(
-                        newTextTrack.id,
-                        playheadPosition,
-                        "New Title",
-                        5,
-                        DEFAULT_TITLE_STYLE,
-                      );
-                      if (created) {
-                        select({
-                          type: "text-clip",
-                          id: created.id,
-                          trackId: newTextTrack.id,
-                        });
-                      }
+                    if (created) {
+                      select({
+                        type: "text-clip",
+                        id: created.id,
+                        trackId: created.trackId,
+                      });
                     }
                   }}
                   className="flex min-h-[72px] w-full min-w-0 flex-col items-center justify-center rounded-lg border border-border bg-background-tertiary px-3 py-3 text-center transition-all hover:border-primary/50 hover:bg-primary/5"
@@ -1475,32 +1446,26 @@ export const AssetsPanel: React.FC = () => {
                       key={preset.name}
                       label={preset.name}
                       onClick={async () => {
-                        const state = useProjectStore.getState();
-                        const { createTextClip, addTrack } = state;
-                        const tracksBefore = state.project.timeline.tracks;
-                        await addTrack("text", 0);
-                        const tracksAfter =
-                          useProjectStore.getState().project.timeline.tracks;
-                        const newTextTrack = tracksAfter.find(
-                          (t) =>
-                            t.type === "text" &&
-                            !tracksBefore.some((bt) => bt.id === t.id),
+                        const created = await insertTimelineOverlay(
+                          playheadPosition,
+                          5,
+                          (trackId) =>
+                            useProjectStore
+                              .getState()
+                              .createTextClip(
+                                trackId,
+                                playheadPosition,
+                                preset.text,
+                                5,
+                                preset.style,
+                              ),
                         );
-                        if (newTextTrack) {
-                          const created = createTextClip(
-                            newTextTrack.id,
-                            playheadPosition,
-                            preset.text,
-                            5,
-                            preset.style,
-                          );
-                          if (created) {
-                            select({
-                              type: "text-clip",
-                              id: created.id,
-                              trackId: newTextTrack.id,
-                            });
-                          }
+                        if (created) {
+                          select({
+                            type: "text-clip",
+                            id: created.id,
+                            trackId: created.trackId,
+                          });
                         }
                       }}
                       className="flex min-h-[44px] min-w-0 items-center justify-center rounded-lg border border-border bg-background-tertiary px-2 py-2 text-center text-xs font-medium leading-tight text-text-secondary transition-all hover:border-primary/50 hover:bg-primary/5 hover:text-text-primary"

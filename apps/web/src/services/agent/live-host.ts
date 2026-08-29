@@ -29,6 +29,7 @@ import type {
   MotionRenderQueueAddResult,
   MotionRenderQueueAddError,
   MotionRenderQueueRunResult,
+  MulticamHostBridge,
 } from "@openreel/agent";
 import type { TextStyle, TextAnimationPreset } from "@openreel/core/text/types";
 import type { ShapeStyle, ShapeType } from "@openreel/core/graphics/types";
@@ -38,6 +39,7 @@ import type { Action } from "@openreel/core/types/actions";
 import type { Project } from "@openreel/core/types/project";
 import type { CapabilityManifest } from "@openreel/core/capabilities/manifest";
 import { useProjectStore } from "../../stores/project-store";
+import { insertTimelineOverlay } from "../../stores/project/insert-timeline-overlay";
 import { checkForRecovery } from "../auto-save";
 import { inspectGltfModel } from "../../motion/model-inspection";
 import {
@@ -52,6 +54,7 @@ import {
   type MotionRenderQueueFormat,
 } from "../../motion/stores/motion-store";
 import { runMotionRenderQueue } from "../../motion/render-queue-runner";
+import { createMulticamHostBridge } from "./multicam-bridge";
 
 const MIME_BY_EXT: Record<string, string> = {
   mp4: "video/mp4",
@@ -144,6 +147,9 @@ function normalizeRenderQueueScale(
 export class LiveEditorHost implements EditingHost {
   private jobRunner?: JobRunner;
   private appliedInTxn = 0;
+  readonly multicam: MulticamHostBridge = createMulticamHostBridge((timeMs) =>
+    this.runJob("exportFrame", { time: timeMs / 1_000 }),
+  );
 
   constructor(options: LiveEditorHostOptions = {}) {
     this.jobRunner = options.jobRunner;
@@ -488,38 +494,21 @@ export class LiveEditorHost implements EditingHost {
 
   async createTextOverlay(options: TextOverlayOptions): Promise<OverlayRef> {
     this.requireOpenProject();
-    const store = useProjectStore.getState();
-    const tracks = store.project.timeline.tracks;
-
-    let trackId = options.trackId;
-    if (!trackId || !tracks.some((t) => t.id === trackId)) {
-      const existing = tracks.find((t) => t.type === "text");
-      if (existing) {
-        trackId = existing.id;
-      } else {
-        await store.executeAction({
-          type: "track/add",
-          id: crypto.randomUUID(),
-          timestamp: Date.now(),
-          params: { trackType: "text" },
-        } as Action);
-        const created = useProjectStore
+    const clip = await insertTimelineOverlay(
+      options.startSec,
+      options.durationSec,
+      (trackId) =>
+        useProjectStore
           .getState()
-          .project.timeline.tracks.find((t) => t.type === "text");
-        if (!created) throw new Error("Failed to create a text track");
-        trackId = created.id;
-      }
-    }
-
-    const clip = useProjectStore
-      .getState()
-      .createTextClip(
-        trackId,
-        options.startSec,
-        options.text,
-        options.durationSec,
-        options.style as Partial<TextStyle> | undefined,
-      );
+          .createTextClip(
+            trackId,
+            options.startSec,
+            options.text,
+            options.durationSec,
+            options.style as Partial<TextStyle> | undefined,
+          ),
+      options.trackId,
+    );
     if (!clip) throw new Error("Failed to create text overlay");
 
     if (options.animation && options.animation !== "none") {
@@ -532,47 +521,30 @@ export class LiveEditorHost implements EditingHost {
           options.animationOutSec ?? 0.25,
         );
     }
-    return { id: clip.id, trackId };
+    return { id: clip.id, trackId: clip.trackId };
   }
 
   async createShapeOverlay(options: ShapeOverlayOptions): Promise<OverlayRef> {
     this.requireOpenProject();
-    const store = useProjectStore.getState();
-    const tracks = store.project.timeline.tracks;
-
-    let trackId = options.trackId;
-    if (!trackId || !tracks.some((t) => t.id === trackId)) {
-      const existing = tracks.find((t) => t.type === "graphics");
-      if (existing) {
-        trackId = existing.id;
-      } else {
-        await store.executeAction({
-          type: "track/add",
-          id: crypto.randomUUID(),
-          timestamp: Date.now(),
-          params: { trackType: "graphics" },
-        } as Action);
-        const created = useProjectStore
-          .getState()
-          .project.timeline.tracks.find((t) => t.type === "graphics");
-        if (!created) throw new Error("Failed to create a graphics track");
-        trackId = created.id;
-      }
-    }
-
     const style: Partial<ShapeStyle> = {
       fill: { type: "solid", color: options.color ?? "#000000", opacity: options.opacity ?? 0.45 },
       stroke: { color: "#000000", width: 0, opacity: 0 },
     };
-    const clip = useProjectStore
-      .getState()
-      .createShapeClip(
-        trackId,
-        options.startSec,
-        (options.shapeType ?? "rectangle") as ShapeType,
-        options.durationSec,
-        style,
-      );
+    const clip = await insertTimelineOverlay(
+      options.startSec,
+      options.durationSec,
+      (trackId) =>
+        useProjectStore
+          .getState()
+          .createShapeClip(
+            trackId,
+            options.startSec,
+            (options.shapeType ?? "rectangle") as ShapeType,
+            options.durationSec,
+            style,
+          ),
+      options.trackId,
+    );
     if (!clip) throw new Error("Failed to create shape overlay");
 
     if (options.fullFrame) {
@@ -585,23 +557,7 @@ export class LiveEditorHost implements EditingHost {
         opacity: 1,
       });
     }
-    return { id: clip.id, trackId };
-  }
-
-  private async ensureOverlayTrack(
-    type: "text" | "graphics",
-    trackId?: string,
-  ): Promise<string> {
-    const tracks = useProjectStore.getState().project.timeline.tracks;
-    if (trackId && tracks.some((t) => t.id === trackId)) return trackId;
-    const existing = tracks.find((t) => t.type === type);
-    if (existing) return existing.id;
-    await useProjectStore.getState().addTrack(type, 0);
-    const created = useProjectStore
-      .getState()
-      .project.timeline.tracks.find((t) => t.type === type);
-    if (!created) throw new Error(`Failed to create a ${type} track`);
-    return created.id;
+    return { id: clip.id, trackId: clip.trackId };
   }
 
   async updateTextOverlay(
@@ -691,34 +647,40 @@ export class LiveEditorHost implements EditingHost {
     options: StickerOverlayOptions,
   ): Promise<OverlayRef> {
     this.requireOpenProject();
-    const trackId = await this.ensureOverlayTrack("graphics", options.trackId);
     const { stickerLibrary } = await import("@openreel/core");
-    const clip = options.imageUrl
-      ? stickerLibrary.createStickerClip(
-          {
-            id: crypto.randomUUID(),
-            name: options.name ?? "sticker",
-            category: "custom",
-            imageUrl: options.imageUrl,
-          },
-          trackId,
-          options.startSec,
-          options.durationSec,
-        )
-      : stickerLibrary.createEmojiClip(
-          {
-            id: crypto.randomUUID(),
-            emoji: options.emoji ?? "⭐",
-            name: options.name ?? options.emoji ?? "emoji",
-            category: "emojis",
-          },
-          trackId,
-          options.startSec,
-          options.durationSec,
-        );
-    const created = useProjectStore.getState().createStickerClip(clip);
+    const created = await insertTimelineOverlay(
+      options.startSec,
+      options.durationSec,
+      (trackId) => {
+        const clip = options.imageUrl
+          ? stickerLibrary.createStickerClip(
+              {
+                id: crypto.randomUUID(),
+                name: options.name ?? "sticker",
+                category: "custom",
+                imageUrl: options.imageUrl,
+              },
+              trackId,
+              options.startSec,
+              options.durationSec,
+            )
+          : stickerLibrary.createEmojiClip(
+              {
+                id: crypto.randomUUID(),
+                emoji: options.emoji ?? "⭐",
+                name: options.name ?? options.emoji ?? "emoji",
+                category: "emojis",
+              },
+              trackId,
+              options.startSec,
+              options.durationSec,
+            );
+        return useProjectStore.getState().createStickerClip(clip);
+      },
+      options.trackId,
+    );
     if (!created) throw new Error("Failed to create sticker overlay");
-    return { id: created.id, trackId };
+    return { id: created.id, trackId: created.trackId };
   }
 
   async updateStickerOverlay(
@@ -742,12 +704,22 @@ export class LiveEditorHost implements EditingHost {
 
   async createSvgOverlay(options: SvgOverlayOptions): Promise<OverlayRef> {
     this.requireOpenProject();
-    const trackId = await this.ensureOverlayTrack("graphics", options.trackId);
-    const clip = useProjectStore
-      .getState()
-      .importSVG(options.svg, trackId, options.startSec, options.durationSec);
+    const clip = await insertTimelineOverlay(
+      options.startSec,
+      options.durationSec,
+      (trackId) =>
+        useProjectStore
+          .getState()
+          .importSVG(
+            options.svg,
+            trackId,
+            options.startSec,
+            options.durationSec,
+          ),
+      options.trackId,
+    );
     if (!clip) throw new Error("Failed to create SVG overlay");
-    return { id: clip.id, trackId };
+    return { id: clip.id, trackId: clip.trackId };
   }
 
   async updateSvgOverlay(

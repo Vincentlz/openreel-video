@@ -57,7 +57,12 @@ import {
   type Mask,
   type AdjustmentLayer,
   type BlendMode,
+  type MediaItem,
   getTrackTransitionAudioFades,
+  resolveCanvasFitDimensions,
+  getMediaItemCapabilities,
+  getVisibleTrackRenderOrder,
+  trackHasAudioItems,
 } from "@openreel/core";
 import { useEngineStore } from "../../stores/engine-store";
 import {
@@ -91,7 +96,9 @@ import {
   PREVIEW_QUALITY_OPTIONS,
 } from "./preview/index";
 import { snapCanvasPosition } from "./preview/canvas-snapping";
+import { captureNativeVideoFrame } from "./preview/video-frame";
 import { ProcessingOverlay } from "./ProcessingOverlay";
+import { editingFrameDurationMs } from "./editing-frame-rate";
 import {
   getPersonSegmentationEngine,
   getBackgroundRemovalEngine,
@@ -316,38 +323,21 @@ const computeFitScale = (
   sourceHeight: number,
   canvasWidth: number,
   canvasHeight: number,
+  crop?: ClipTransform["crop"],
 ): { x: number; y: number } => {
-  const mode = !fitMode || fitMode === "none" ? "contain" : fitMode;
-  if (
-    mode === "stretch" ||
-    sourceWidth <= 0 ||
-    sourceHeight <= 0 ||
-    canvasWidth <= 0 ||
-    canvasHeight <= 0
-  ) {
+  if (canvasWidth <= 0 || canvasHeight <= 0) {
     return { x: 1, y: 1 };
   }
-  const sourceAspect = sourceWidth / sourceHeight;
-  const canvasAspect = canvasWidth / canvasHeight;
-  let drawWidth: number;
-  let drawHeight: number;
-  if (mode === "cover") {
-    if (sourceAspect > canvasAspect) {
-      drawHeight = canvasHeight;
-      drawWidth = canvasHeight * sourceAspect;
-    } else {
-      drawWidth = canvasWidth;
-      drawHeight = canvasWidth / sourceAspect;
-    }
-  } else {
-    if (sourceAspect > canvasAspect) {
-      drawWidth = canvasWidth;
-      drawHeight = canvasWidth / sourceAspect;
-    } else {
-      drawHeight = canvasHeight;
-      drawWidth = canvasHeight * sourceAspect;
-    }
-  }
+  const visibleSourceWidth = crop ? crop.width * sourceWidth : sourceWidth;
+  const visibleSourceHeight = crop ? crop.height * sourceHeight : sourceHeight;
+  const { width: drawWidth, height: drawHeight } =
+    resolveCanvasFitDimensions(
+      fitMode,
+      visibleSourceWidth,
+      visibleSourceHeight,
+      canvasWidth,
+      canvasHeight,
+    );
   return { x: drawWidth / canvasWidth, y: drawHeight / canvasHeight };
 };
 
@@ -434,6 +424,7 @@ const renderFrameWithGPU = async (
       frame.height,
       canvasWidth,
       canvasHeight,
+      transform.crop,
     );
     const gpuTransform = {
       position: transform.position,
@@ -445,6 +436,7 @@ const renderFrameWithGPU = async (
       anchor: transform.anchor,
       opacity: transform.opacity,
       borderRadius: transform.borderRadius,
+      crop: transform.crop,
     };
 
     renderer.renderLayer({
@@ -493,6 +485,7 @@ const renderAllLayersWithGPU = async (
         layer.bitmap.height,
         canvasWidth,
         canvasHeight,
+        layer.transform.crop,
       );
       const gpuTransform = {
         position: layer.transform.position,
@@ -504,6 +497,7 @@ const renderAllLayersWithGPU = async (
         anchor: layer.transform.anchor,
         opacity: layer.transform.opacity,
         borderRadius: layer.transform.borderRadius,
+        crop: layer.transform.crop,
       };
 
       renderer.renderLayer({
@@ -534,17 +528,17 @@ const hasBehindSubjectText = (textClips: TextClip[]): boolean =>
 const getBehindSubjectStreamId = (
   tracks: readonly Track[],
   time: number,
+  getMediaItem: (mediaId: string) => MediaItem | undefined,
 ): string => {
   const activeSourceIds = tracks
-    .filter(
-      (track) =>
-        (track.type === "video" || track.type === "image") && !track.hidden,
-    )
+    .filter((track) => !track.hidden)
     .flatMap((track) =>
       track.clips
         .filter(
           (clip) =>
-            time >= clip.startTime && time < clip.startTime + clip.duration,
+            time >= clip.startTime &&
+            time < clip.startTime + clip.duration &&
+            getMediaItemCapabilities(getMediaItem(clip.mediaId)).visual,
         )
         .map((clip) => clip.id),
     )
@@ -1043,12 +1037,10 @@ export const Preview: React.FC = () => {
   // Throttle store updates during interaction (update at most every 32ms ~30fps)
   const lastStoreUpdateRef = useRef<number>(0);
   const STORE_UPDATE_THROTTLE_MS = 32;
-  // Throttle playhead updates during playback to reduce React re-renders
+  // Throttle playhead updates during playback to reduce React re-renders.
+  // The interval follows the project timebase so 60 fps projects publish a
+  // 60 Hz playhead instead of being capped at 30 Hz.
   const lastPlayheadUpdateRef = useRef<number>(0);
-  // Keep React/timeline updates from competing with continuous media playback.
-  // The video canvas still renders on every animation frame; only the heavier
-  // editor-wide playhead state update is capped to roughly 30fps.
-  const PLAYHEAD_UPDATE_THROTTLE_MS = 33;
   // Live transform state for immediate visual feedback during interaction
   const [liveTransform, setLiveTransform] = useState<{
     position: { x: number; y: number };
@@ -1186,22 +1178,55 @@ export const Preview: React.FC = () => {
   // when any part of the project changes (including clips)
   const project = useProjectStore((state) => state.project);
   const getMediaItem = useProjectStore((state) => state.getMediaItem);
+  const mediaClipHasVisual = useCallback(
+    (clip: PreviewClip) =>
+      getMediaItemCapabilities(getMediaItem(clip.mediaId)).visual,
+    [getMediaItem],
+  );
+  const mediaClipHasAudio = useCallback(
+    (clip: PreviewClip) =>
+      getMediaItemCapabilities(getMediaItem(clip.mediaId)).audio,
+    [getMediaItem],
+  );
+
+  useEffect(() => {
+    const cachedFrame = lastGoodFrameRef.current;
+    lastGoodFrameRef.current = null;
+    cachedFrame?.close();
+  }, [project]);
 
   // Get text clips from TitleEngine
   const getTitleEngine = useEngineStore((state) => state.getTitleEngine);
   const allTextClips = useMemo(() => {
+    if (project.textClips) return project.textClips;
     const titleEngine = getTitleEngine();
     return titleEngine?.getAllTextClips() || [];
-  }, [getTitleEngine, project.modifiedAt]);
+  }, [getTitleEngine, project.textClips]);
 
   const getGraphicsEngine = useEngineStore((state) => state.getGraphicsEngine);
   const allShapeClips = useMemo(() => {
+    if (
+      project.shapeClips ||
+      project.svgClips ||
+      project.stickerClips
+    ) {
+      return [
+        ...(project.shapeClips ?? []),
+        ...(project.svgClips ?? []),
+        ...(project.stickerClips ?? []),
+      ];
+    }
     const graphicsEngine = getGraphicsEngine();
     const shapes = graphicsEngine?.getAllShapeClips() || [];
     const svgs = graphicsEngine?.getAllSVGClips() || [];
     const stickers = graphicsEngine?.getAllStickerClips() || [];
     return [...shapes, ...svgs, ...stickers];
-  }, [getGraphicsEngine, project.modifiedAt]);
+  }, [
+    getGraphicsEngine,
+    project.shapeClips,
+    project.stickerClips,
+    project.svgClips,
+  ]);
 
   const getMaskEngine = useEngineStore((state) => state.getMaskEngine);
   const clipMasksById = useMemo(() => {
@@ -1284,6 +1309,7 @@ export const Preview: React.FC = () => {
   const updateSettings = useProjectStore((state) => state.updateSettings);
   const timelineTracks = project.timeline.tracks;
   const settings = project.settings;
+  const editingFrameDuration = editingFrameDurationMs(settings.frameRate);
 
   const canvasFillMode = project.timeline.backgroundFillMode;
   const canvasFillColor = project.timeline.layoutBackgroundColor;
@@ -1877,12 +1903,22 @@ export const Preview: React.FC = () => {
       mode: "below-video" | "above-video" | "all" = "all",
       subjectFrame: ImageBitmap | null = null,
     ) => {
-      const subjectStreamId = getBehindSubjectStreamId(tracks, time);
+      const subjectStreamId = getBehindSubjectStreamId(
+        tracks,
+        time,
+        getMediaItem,
+      );
       const videoImageTrackIndices = tracks
         .map((t, idx) => ({ track: t, originalIndex: idx }))
         .filter(
           ({ track }) =>
-            (track.type === "video" || track.type === "image") && !track.hidden,
+            !track.hidden &&
+            track.clips.some(
+              (clip) =>
+                time >= clip.startTime &&
+                time < clip.startTime + clip.duration &&
+                mediaClipHasVisual(clip),
+            ),
         )
         .map(({ originalIndex }) => originalIndex);
 
@@ -1895,13 +1931,7 @@ export const Preview: React.FC = () => {
           ? Math.max(...videoImageTrackIndices)
           : -1;
 
-      const overlayTracksWithIndex = tracks
-        .map((t, idx) => ({ track: t, originalIndex: idx }))
-        .filter(
-          ({ track }) =>
-            (track.type === "text" || track.type === "graphics") &&
-            !track.hidden,
-        );
+      const overlayTracksWithIndex = getVisibleTrackRenderOrder(tracks);
 
       const tracksToRender = overlayTracksWithIndex.filter(
         ({ originalIndex }) => {
@@ -1914,49 +1944,44 @@ export const Preview: React.FC = () => {
         },
       );
 
-      tracksToRender.sort((a, b) => b.originalIndex - a.originalIndex);
-
       for (const { track } of tracksToRender) {
-        if (track.type === "graphics") {
-          const trackShapeClips = shapeClips.filter(
-            (sc) => sc.trackId === track.id,
-          );
-          for (const shapeClip of trackShapeClips) {
-            await renderShapeClipWithEffects(
-              ctx,
-              shapeClip,
-              canvasWidth,
-              canvasHeight,
-              time,
-            );
-          }
-          await renderMotionInstancesForTrack(
+        const trackShapeClips = shapeClips.filter(
+          (clip) => clip.trackId === track.id,
+        );
+        for (const shapeClip of trackShapeClips) {
+          await renderShapeClipWithEffects(
             ctx,
-            track,
-            time,
+            shapeClip,
             canvasWidth,
             canvasHeight,
+            time,
           );
-        } else if (track.type === "text") {
-          const trackTextClips = textClips.filter(
-            (tc) => tc.trackId === track.id,
+        }
+        await renderMotionInstancesForTrack(
+          ctx,
+          track,
+          time,
+          canvasWidth,
+          canvasHeight,
+        );
+        const trackTextClips = textClips.filter(
+          (clip) => clip.trackId === track.id,
+        );
+        for (const textClip of trackTextClips) {
+          await renderTextClipWithSubjectMask(
+            ctx,
+            textClip,
+            canvasWidth,
+            canvasHeight,
+            time,
+            subjectFrame,
+            isPlaying,
+            subjectStreamId,
           );
-          for (const textClip of trackTextClips) {
-            await renderTextClipWithSubjectMask(
-              ctx,
-              textClip,
-              canvasWidth,
-              canvasHeight,
-              time,
-              subjectFrame,
-              isPlaying,
-              subjectStreamId,
-            );
-          }
         }
       }
     },
-    [isPlaying, renderMotionInstancesForTrack],
+    [getMediaItem, isPlaying, mediaClipHasVisual, renderMotionInstancesForTrack],
   );
 
   /**
@@ -1972,7 +1997,9 @@ export const Preview: React.FC = () => {
   const setupAudioFromAudioTrack = useCallback(
     async (timelinePosition: number): Promise<void> => {
       const tracks = timelineTracksRef.current;
-      const audioTracks = tracks.filter((t) => t.type === "audio" && !t.hidden);
+      const audioTracks = tracks.filter(
+        (track) => !track.hidden && trackHasAudioItems(project, track.id),
+      );
 
       if (!audioGraphRef.current) {
         audioGraphRef.current = getRealtimeAudioGraph();
@@ -1998,6 +2025,9 @@ export const Preview: React.FC = () => {
         }
 
         for (const audioClip of audioTrack.clips) {
+          if (!mediaClipHasAudio(audioClip)) {
+            continue;
+          }
           const clipEnd = audioClip.startTime + audioClip.duration;
 
           if (
@@ -2102,15 +2132,14 @@ export const Preview: React.FC = () => {
       getResolvedClipAudioEffects,
       getResolvedClipVolumeAutomation,
       isMuted,
+      mediaClipHasAudio,
+      project,
     ],
   );
 
   const preDecodeAllAudioBuffers = useCallback(async (): Promise<void> => {
     const tracks = timelineTracksRef.current;
-    const audioTracks = tracks.filter((t) => t.type === "audio" && !t.hidden);
-    const videoTracks = tracks.filter(
-      (t) => (t.type === "video" || t.type === "image") && !t.hidden,
-    );
+    const audioTracks = tracks.filter((track) => !track.hidden);
 
     if (!audioGraphRef.current) {
       audioGraphRef.current = getRealtimeAudioGraph();
@@ -2118,10 +2147,11 @@ export const Preview: React.FC = () => {
     const audioGraph = audioGraphRef.current;
     const audioContext = audioGraph.getAudioContext();
 
-    const allTracks = [...audioTracks, ...videoTracks];
-
-    for (const track of allTracks) {
+    for (const track of audioTracks) {
       for (const clip of track.clips) {
+        if (!mediaClipHasAudio(clip)) {
+          continue;
+        }
         const cacheKey = getAudioBufferCacheKey(clip.mediaId, clip.audioTrackIndex);
         let audioBuffer: AudioBuffer | null | undefined =
           audioBufferCacheRef.current.get(cacheKey);
@@ -2169,7 +2199,12 @@ export const Preview: React.FC = () => {
         }
       }
     }
-  }, [getMediaItem, getPreviewAudioBufferForEffects, getResolvedClipAudioEffects]);
+  }, [
+    getMediaItem,
+    getPreviewAudioBufferForEffects,
+    getResolvedClipAudioEffects,
+    mediaClipHasAudio,
+  ]);
 
   // Pre-warm audio decode caches when the timeline settles after an edit (e.g.
   // moving/adding a clip), so the realtime scheduler finds decoded buffers ready
@@ -2226,12 +2261,15 @@ export const Preview: React.FC = () => {
     (time: number): AudioClipSchedule[] => {
       const tracks = timelineTracksRef.current;
       const tracksWithAudio = tracks.filter(
-        (t) => (t.type === "audio" || t.type === "video") && !t.hidden && !t.muted,
+        (track) => !track.hidden && !track.muted,
       );
       const schedules: AudioClipSchedule[] = [];
 
       for (const track of tracksWithAudio) {
         for (const clip of track.clips) {
+          if (!mediaClipHasAudio(clip)) {
+            continue;
+          }
           const clipEnd = clip.startTime + clip.duration;
           if (clipEnd <= time || clip.startTime > time + 1) {
             continue;
@@ -2298,6 +2336,7 @@ export const Preview: React.FC = () => {
       getAudioEffectSignature,
       getResolvedClipAudioEffects,
       getResolvedClipVolumeAutomation,
+      mediaClipHasAudio,
     ],
   );
 
@@ -2314,8 +2353,6 @@ export const Preview: React.FC = () => {
         inPoint?: number;
       },
       time: number,
-      canvasWidth: number,
-      canvasHeight: number,
     ): Promise<ImageBitmap | null> => {
       const mediaItem = getMediaItem(clip.mediaId);
       if (!mediaItem?.blob) return null;
@@ -2498,50 +2535,7 @@ export const Preview: React.FC = () => {
               return;
             }
 
-            const tempCanvas = document.createElement("canvas");
-            tempCanvas.width = canvasWidth;
-            tempCanvas.height = canvasHeight;
-            const tempCtx = tempCanvas.getContext("2d");
-            if (!tempCtx) {
-              resolve(null);
-              return;
-            }
-
-            const videoAspect = video.videoWidth / video.videoHeight;
-            const canvasAspect = canvasWidth / canvasHeight;
-            let drawWidth = canvasWidth;
-            let drawHeight = canvasHeight;
-            let offsetX = 0;
-            let offsetY = 0;
-
-            if (videoAspect > canvasAspect) {
-              drawHeight = canvasWidth / videoAspect;
-              offsetY = (canvasHeight - drawHeight) / 2;
-            } else {
-              drawWidth = canvasHeight * videoAspect;
-              offsetX = (canvasWidth - drawWidth) / 2;
-            }
-
-            if (
-              canvasFillModeRef.current === "blur" &&
-              video.videoWidth > 0 &&
-              video.videoHeight > 0
-            ) {
-              drawBlurredBackdrop(
-                tempCtx,
-                video,
-                video.videoWidth,
-                video.videoHeight,
-                canvasWidth,
-                canvasHeight,
-              );
-            } else {
-              tempCtx.fillStyle = previewBgRef.current;
-              tempCtx.fillRect(0, 0, canvasWidth, canvasHeight);
-            }
-            tempCtx.drawImage(video, offsetX, offsetY, drawWidth, drawHeight);
-
-            const frame = await createImageBitmap(tempCanvas);
+            const frame = await captureNativeVideoFrame(video);
             if (isStaleRequest()) {
               frame.close();
               resolve(null);
@@ -2645,22 +2639,13 @@ export const Preview: React.FC = () => {
       if (!ctx) return false;
 
       const videoTracks = timelineTracks.filter(
-        (t) => (t.type === "video" || t.type === "image") && !t.hidden,
+        (track) =>
+          !track.hidden && track.clips.some((clip) => mediaClipHasVisual(clip)),
       );
 
       let hasRenderedFrame = false;
       let shouldClearCanvas = true;
-      const hadBackground = Boolean(lastGoodFrameRef.current);
-      if (lastGoodFrameRef.current) {
-        ctx.drawImage(
-          lastGoodFrameRef.current,
-          0,
-          0,
-          canvas.width,
-          canvas.height,
-        );
-        shouldClearCanvas = false;
-      }
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       const activeShapeClips = getActiveShapeClips(allShapeClips, time);
       const activeTextClips = getActiveTextClips(allTextClips, time);
@@ -2680,23 +2665,17 @@ export const Preview: React.FC = () => {
         shouldClearCanvas = false;
       }
 
-      const transitionInfo = getTransitionAtTime(time, timelineTracks);
+      const transitionInfo = getTransitionAtTime(
+        time,
+        timelineTracks,
+        mediaClipHasVisual,
+      );
 
       if (transitionInfo) {
         try {
-          const clipAFrame = await decodeClipFrame(
-            transitionInfo.clipA,
-            time,
-            canvas.width,
-            canvas.height,
-          );
+          const clipAFrame = await decodeClipFrame(transitionInfo.clipA, time);
           const clipBFrame = transitionInfo.clipB
-            ? await decodeClipFrame(
-                transitionInfo.clipB,
-                time,
-                canvas.width,
-                canvas.height,
-              )
+            ? await decodeClipFrame(transitionInfo.clipB, time)
             : null;
           const blankFrame = transitionInfo.clipB
             ? null
@@ -2766,7 +2745,13 @@ export const Preview: React.FC = () => {
                 canvas.height,
                 "below-video",
               );
-              ctx.drawImage(blendedFrame, 0, 0);
+              drawFrameWithTransform(
+                ctx,
+                blendedFrame,
+                DEFAULT_TRANSFORM,
+                canvas.width,
+                canvas.height,
+              );
               await renderOverlayClipsInTrackOrder(
                 ctx,
                 timelineTracks,
@@ -2828,7 +2813,13 @@ export const Preview: React.FC = () => {
               canvas.height,
               "below-video",
             );
-            ctx.drawImage(validFrame, 0, 0);
+            drawFrameWithTransform(
+              ctx,
+              validFrame,
+              DEFAULT_TRANSFORM,
+              canvas.width,
+              canvas.height,
+            );
             await renderOverlayClipsInTrackOrder(
               ctx,
               timelineTracks,
@@ -2868,7 +2859,13 @@ export const Preview: React.FC = () => {
               canvas.height,
               "below-video",
             );
-            ctx.drawImage(validFrame, 0, 0);
+            drawFrameWithTransform(
+              ctx,
+              validFrame,
+              DEFAULT_TRANSFORM,
+              canvas.width,
+              canvas.height,
+            );
             await renderOverlayClipsInTrackOrder(
               ctx,
               timelineTracks,
@@ -2896,7 +2893,9 @@ export const Preview: React.FC = () => {
         const hasVideoContent = videoTracks.some((track) =>
           track.clips.some(
             (clip) =>
-              time >= clip.startTime && time < clip.startTime + clip.duration,
+              mediaClipHasVisual(clip) &&
+              time >= clip.startTime &&
+              time < clip.startTime + clip.duration,
           ),
         );
         const hasMotionContent = hasActiveMotionInstances(time);
@@ -2919,46 +2918,29 @@ export const Preview: React.FC = () => {
 
         // Render ALL tracks in layer order using painter's algorithm
         // Higher index = rendered first (appears behind), Lower index = rendered last (appears on top)
-        const allRenderableTracks = timelineTracks
-          .map((track, idx) => ({ track, originalIndex: idx }))
-          .filter(
-            ({ track }) =>
-              (track.type === "video" ||
-                track.type === "image" ||
-                track.type === "text" ||
-                track.type === "graphics") &&
-              !track.hidden,
-          )
-          .sort((a, b) => b.originalIndex - a.originalIndex);
+        const allRenderableTracks = getVisibleTrackRenderOrder(timelineTracks);
 
         let subjectFrame: ImageBitmap | null = null;
         const shouldCompositeSubject = hasBehindSubjectText(activeTextClips);
         let blurBackdropDrawn = false;
 
         for (const { track } of allRenderableTracks) {
-          if (track.type === "video" || track.type === "image") {
+          {
             for (const clip of track.clips) {
+              if (!mediaClipHasVisual(clip)) continue;
               const clipStart = clip.startTime;
               const clipEnd = clip.startTime + clip.duration;
 
               if (time >= clipStart && time < clipEnd) {
-                const frame = await decodeClipFrame(
-                  clip,
-                  time,
-                  canvas.width,
-                  canvas.height,
-                );
+                const frame = await decodeClipFrame(clip, time);
 
                 if (frame) {
-                  // Blur canvas fill for images: decodeClipFrame returns a raw
-                  // (un-letterboxed) bitmap for images, so paint it cover-fit +
-                  // blurred behind everything before the contained clip is drawn
-                  // on top. Video frames are canvas-sized and already carry the
-                  // blurred backdrop baked in by decodeClipFrame.
+                  // The decoder returns native, un-letterboxed frames for both
+                  // images and videos. Paint the first visible layer cover-fit
+                  // behind the composition when the project uses blur fill.
                   if (
                     canvasFillModeRef.current === "blur" &&
-                    !blurBackdropDrawn &&
-                    getMediaItem(clip.mediaId)?.type === "image"
+                    !blurBackdropDrawn
                   ) {
                     drawBlurredBackdrop(
                       ctx,
@@ -3104,49 +3086,47 @@ export const Preview: React.FC = () => {
                 }
               }
             }
-          } else if (track.type === "graphics") {
-            const trackShapeClips = activeShapeClips.filter(
-              (sc) => sc.trackId === track.id,
+          }
+          const trackShapeClips = activeShapeClips.filter(
+            (clip) => clip.trackId === track.id,
+          );
+          for (const shapeClip of trackShapeClips) {
+            await renderShapeClipWithEffects(
+              ctx,
+              shapeClip,
+              canvas.width,
+              canvas.height,
+              time,
             );
-            for (const shapeClip of trackShapeClips) {
-              await renderShapeClipWithEffects(
-                ctx,
-                shapeClip,
-                canvas.width,
-                canvas.height,
-                time,
-              );
-              hasRenderedFrame = true;
-            }
-            if (
-              await renderMotionInstancesForTrack(
-                ctx,
-                track,
-                time,
-                canvas.width,
-                canvas.height,
-              )
-            ) {
-              hasRenderedFrame = true;
-            }
-          } else if (track.type === "text") {
-            const trackTextClips = activeTextClips.filter(
-              (tc) => tc.trackId === track.id,
+            hasRenderedFrame = true;
+          }
+          if (
+            await renderMotionInstancesForTrack(
+              ctx,
+              track,
+              time,
+              canvas.width,
+              canvas.height,
+            )
+          ) {
+            hasRenderedFrame = true;
+          }
+          const trackTextClips = activeTextClips.filter(
+            (clip) => clip.trackId === track.id,
+          );
+          for (const textClip of trackTextClips) {
+            await renderTextClipWithSubjectMask(
+              ctx,
+              textClip,
+              canvas.width,
+              canvas.height,
+              time,
+              subjectFrame,
+              isPlaying,
+              getBehindSubjectStreamId(timelineTracks, time, getMediaItem),
             );
-            for (const textClip of trackTextClips) {
-              await renderTextClipWithSubjectMask(
-                ctx,
-                textClip,
-                canvas.width,
-                canvas.height,
-                time,
-                subjectFrame,
-                isPlaying,
-                getBehindSubjectStreamId(timelineTracks, time),
-              );
 
-              hasRenderedFrame = true;
-            }
+            hasRenderedFrame = true;
           }
         }
         subjectFrame?.close();
@@ -3187,23 +3167,6 @@ export const Preview: React.FC = () => {
         return true;
       }
 
-      const hasActiveContent =
-        videoTracks.some((track) =>
-          track.clips.some(
-            (clip) =>
-              time >= clip.startTime && time < clip.startTime + clip.duration,
-          ),
-        ) ||
-        hasActiveMotionInstances(time) ||
-        activeShapeClips.length > 0 ||
-        activeTextClips.length > 0;
-
-      if (hadBackground && hasActiveContent && offscreenCanvasRef.current) {
-        mainCtx.clearRect(0, 0, canvas.width, canvas.height);
-        mainCtx.drawImage(offscreenCanvasRef.current, 0, 0);
-        return true;
-      }
-
       return hasRenderedFrame;
     },
     [
@@ -3225,6 +3188,7 @@ export const Preview: React.FC = () => {
       isDark,
       isPlaying,
       project.adjustmentLayers,
+      mediaClipHasVisual,
     ],
   );
 
@@ -3274,13 +3238,16 @@ export const Preview: React.FC = () => {
       const activeTextClips = getActiveTextClips(allTextClips, time);
 
       const videoTracks = timelineTracks.filter(
-        (t) => (t.type === "video" || t.type === "image") && !t.hidden,
+        (track) =>
+          !track.hidden && track.clips.some((clip) => mediaClipHasVisual(clip)),
       );
 
       const hasVideoContent = videoTracks.some((track) =>
         track.clips.some(
           (clip) =>
-            time >= clip.startTime && time < clip.startTime + clip.duration,
+            mediaClipHasVisual(clip) &&
+            time >= clip.startTime &&
+            time < clip.startTime + clip.duration,
         ),
       );
 
@@ -3293,21 +3260,12 @@ export const Preview: React.FC = () => {
 
       let hasRenderedContent = false;
 
-      const allRenderableTracks = timelineTracks
-        .map((track, idx) => ({ track, originalIndex: idx }))
-        .filter(
-          ({ track }) =>
-            (track.type === "video" ||
-              track.type === "image" ||
-              track.type === "text" ||
-              track.type === "graphics") &&
-            !track.hidden,
-        )
-        .sort((a, b) => b.originalIndex - a.originalIndex);
+      const allRenderableTracks = getVisibleTrackRenderOrder(timelineTracks);
 
       for (const { track } of allRenderableTracks) {
-        if (track.type === "video" || track.type === "image") {
+        {
           for (const clip of track.clips) {
+            if (!mediaClipHasVisual(clip)) continue;
             const clipStart = clip.startTime;
             const clipEnd = clip.startTime + clip.duration;
 
@@ -3350,37 +3308,35 @@ export const Preview: React.FC = () => {
               }
             }
           }
-        } else if (track.type === "graphics") {
-          const trackShapeClips = activeShapeClips.filter(
-            (sc) => sc.trackId === track.id,
+        }
+        const trackShapeClips = activeShapeClips.filter(
+          (clip) => clip.trackId === track.id,
+        );
+        for (const shapeClip of trackShapeClips) {
+          await renderShapeClipWithEffects(
+            ctx,
+            shapeClip,
+            canvas.width,
+            canvas.height,
+            time,
           );
-          for (const shapeClip of trackShapeClips) {
-            await renderShapeClipWithEffects(
-              ctx,
-              shapeClip,
-              canvas.width,
-              canvas.height,
-              time,
-            );
-            hasRenderedContent = true;
-          }
-        } else if (track.type === "text") {
-          const trackTextClips = activeTextClips.filter(
-            (tc) => tc.trackId === track.id,
+          hasRenderedContent = true;
+        }
+        const trackTextClips = activeTextClips.filter(
+          (clip) => clip.trackId === track.id,
+        );
+        for (const textClip of trackTextClips) {
+          await renderTextClipWithSubjectMask(
+            ctx,
+            textClip,
+            canvas.width,
+            canvas.height,
+            time,
+            null,
+            isPlaying,
+            getBehindSubjectStreamId(timelineTracks, time, getMediaItem),
           );
-          for (const textClip of trackTextClips) {
-            await renderTextClipWithSubjectMask(
-              ctx,
-              textClip,
-              canvas.width,
-              canvas.height,
-              time,
-              null,
-              isPlaying,
-              getBehindSubjectStreamId(timelineTracks, time),
-            );
-            hasRenderedContent = true;
-          }
+          hasRenderedContent = true;
         }
       }
 
@@ -3395,12 +3351,11 @@ export const Preview: React.FC = () => {
         );
       }
 
-      const audioTracks = timelineTracks.filter(
-        (t) => t.type === "audio" && !t.hidden,
-      );
+      const audioTracks = timelineTracks.filter((track) => !track.hidden);
       const hasActiveAudioClip = audioTracks.some((track) =>
         track.clips.some(
           (clip) =>
+            mediaClipHasAudio(clip) &&
             time >= clip.startTime && time < clip.startTime + clip.duration,
         ),
       );
@@ -3433,6 +3388,8 @@ export const Preview: React.FC = () => {
       hasActiveMotionInstances,
       isDark,
       isPlaying,
+      mediaClipHasAudio,
+      mediaClipHasVisual,
     ],
   );
 
@@ -3465,7 +3422,7 @@ export const Preview: React.FC = () => {
       ) {
         return { canUse: false, clips: [] };
       }
-      const videoTracks = tracks.filter((t) => t.type === "video" && !t.hidden);
+      const videoTracks = tracks.filter((track) => !track.hidden);
 
       const allVideoClips: Array<{
         clip: (typeof tracks)[0]["clips"][0];
@@ -3499,12 +3456,12 @@ export const Preview: React.FC = () => {
 
       const hasActiveAudioEffects = tracks.some(
         (track) =>
-          (track.type === "audio" || track.type === "video") &&
           !track.hidden &&
           track.clips.some((clip) => {
             if (clip.startTime + clip.duration <= startPosition) {
               return false;
             }
+            if (!mediaClipHasAudio(clip)) return false;
 
             return getPreviewAudioEffects(
               getResolvedClipAudioEffects(clip),
@@ -3536,7 +3493,7 @@ export const Preview: React.FC = () => {
       // They are rendered using CPU canvas2D after the video frame
 
       // Collect image clips for background compositing (don't disable native playback)
-      const imageTracks = tracks.filter((t) => t.type === "image" && !t.hidden);
+      const imageTracks = tracks.filter((track) => !track.hidden);
       const imageClips: Array<{
         clip: (typeof tracks)[0]["clips"][0];
         trackIndex: number;
@@ -3544,7 +3501,9 @@ export const Preview: React.FC = () => {
       imageTracks.forEach((track) => {
         const trackIndex = tracks.indexOf(track);
         for (const clip of track.clips) {
-          imageClips.push({ clip, trackIndex });
+          if (getMediaItem(clip.mediaId)?.type === "image") {
+            imageClips.push({ clip, trackIndex });
+          }
         }
       });
 
@@ -3561,6 +3520,7 @@ export const Preview: React.FC = () => {
       allShapeClips,
       getResolvedClipAudioEffects,
       clipMasksById,
+      mediaClipHasAudio,
     ],
   );
 
@@ -3708,7 +3668,7 @@ export const Preview: React.FC = () => {
       audioGraph.setPreviewMuted(isMuted);
 
       const tracksWithAudio = timelineTracks.filter(
-        (t) => (t.type === "audio" || t.type === "video") && !t.hidden,
+        (track) => !track.hidden && trackHasAudioItems(project, track.id),
       );
       for (const audioTrack of tracksWithAudio) {
         audioGraph.createTrack({
@@ -3858,7 +3818,7 @@ export const Preview: React.FC = () => {
         // is scheduled from this same clock, so delaying this update until the
         // end of a heavy render makes sound appear to start ahead of the playhead.
         const nowPlayhead = performance.now();
-        if (nowPlayhead - lastPlayheadUpdateRef.current >= PLAYHEAD_UPDATE_THROTTLE_MS) {
+        if (nowPlayhead - lastPlayheadUpdateRef.current >= editingFrameDuration) {
           lastPlayheadUpdateRef.current = nowPlayhead;
           setPlayheadPosition(currentPlayhead);
         }
@@ -3866,6 +3826,7 @@ export const Preview: React.FC = () => {
         const transitionInfo = getTransitionAtTime(
           currentPlayhead,
           timelineTracksRef.current,
+          mediaClipHasVisual,
         );
         if (transitionInfo) {
           const clipARecord = findNativeClipById(transitionInfo.clipA.id);
@@ -4014,7 +3975,7 @@ export const Preview: React.FC = () => {
               const nowTransition = performance.now();
               if (
                 nowTransition - lastPlayheadUpdateRef.current >=
-                PLAYHEAD_UPDATE_THROTTLE_MS
+                editingFrameDuration
               ) {
                 lastPlayheadUpdateRef.current = nowTransition;
                 setPlayheadPosition(currentPlayhead);
@@ -4116,7 +4077,7 @@ export const Preview: React.FC = () => {
           }
 
           const nowNoClip = performance.now();
-          if (nowNoClip - lastPlayheadUpdateRef.current >= PLAYHEAD_UPDATE_THROTTLE_MS) {
+          if (nowNoClip - lastPlayheadUpdateRef.current >= editingFrameDuration) {
             lastPlayheadUpdateRef.current = nowNoClip;
             setPlayheadPosition(currentPlayhead);
           }
@@ -4134,7 +4095,7 @@ export const Preview: React.FC = () => {
           await loadVideoForClip(clip, mediaItem);
           if (!isActive || !nativePlaybackActiveRef.current) return;
           const nowNoCached = performance.now();
-          if (nowNoCached - lastPlayheadUpdateRef.current >= PLAYHEAD_UPDATE_THROTTLE_MS) {
+          if (nowNoCached - lastPlayheadUpdateRef.current >= editingFrameDuration) {
             lastPlayheadUpdateRef.current = nowNoCached;
             setPlayheadPosition(currentPlayhead);
           }
@@ -4441,6 +4402,7 @@ export const Preview: React.FC = () => {
     },
     [
       actualEndTime,
+      editingFrameDuration,
       allSubtitles,
       getMediaItem,
       getAudioClipsForScheduler,
@@ -4452,6 +4414,9 @@ export const Preview: React.FC = () => {
       fillPreviewBackground,
       setPlayheadPosition,
       timelineTracks,
+      project,
+      mediaClipHasVisual,
+      previewRes.scale,
     ],
   );
 
@@ -4498,12 +4463,10 @@ export const Preview: React.FC = () => {
       }> = [];
 
       tracks.forEach((track, originalIndex) => {
-        if (
-          (track.type === "video" || track.type === "image") &&
-          !track.hidden
-        ) {
+        if (!track.hidden) {
           for (const clip of track.clips) {
             if (
+              mediaClipHasVisual(clip) &&
               time >= clip.startTime &&
               time < clip.startTime + clip.duration
             ) {
@@ -4587,11 +4550,12 @@ export const Preview: React.FC = () => {
           // If video clip has default speed, check for linked audio clip's speed
           if (currentSpeed === 1 && !isReverse) {
             const tracks = timelineTracksRef.current;
-            const audioTracks = tracks.filter((t) => t.type === "audio");
+            const audioTracks = tracks;
 
             for (const audioTrack of audioTracks) {
               for (const audioClip of audioTrack.clips) {
                 if (
+                  mediaClipHasAudio(audioClip) &&
                   audioClip.mediaId === clip.mediaId &&
                   Math.abs(audioClip.startTime - clip.startTime) < 0.01
                 ) {
@@ -4630,7 +4594,7 @@ export const Preview: React.FC = () => {
             return;
           }
 
-          const frameDuration = 1000 / 30;
+          const frameDuration = editingFrameDuration;
 
           let currentMediaTime = mediaStartTime;
           let currentPlayheadTime = timelinePosition;
@@ -4838,7 +4802,7 @@ export const Preview: React.FC = () => {
               preparedFrame.cleanup();
 
               const nowPh = performance.now();
-              if (nowPh - lastPlayheadUpdateRef.current >= PLAYHEAD_UPDATE_THROTTLE_MS) {
+              if (nowPh - lastPlayheadUpdateRef.current >= editingFrameDuration) {
                 lastPlayheadUpdateRef.current = nowPh;
                 setPlayheadPosition(currentPlayhead);
               }
@@ -4948,9 +4912,7 @@ export const Preview: React.FC = () => {
 
     const preCacheAllImageBitmaps = async () => {
       const tracks = timelineTracksRef.current;
-      const visualTracks = tracks.filter(
-        (t) => (t.type === "image" || t.type === "video") && !t.hidden,
-      );
+      const visualTracks = tracks.filter((track) => !track.hidden);
 
       for (const track of visualTracks) {
         for (const clip of track.clips) {
@@ -4984,11 +4946,12 @@ export const Preview: React.FC = () => {
       );
 
       const audioTracks = timelineTracksRef.current.filter(
-        (t) => t.type === "audio" && !t.hidden,
+        (track) => !track.hidden,
       );
       const hasActiveAudioClip = audioTracks.some((track) =>
         track.clips.some(
           (clip) =>
+            mediaClipHasAudio(clip) &&
             playbackStartPosition >= clip.startTime &&
             playbackStartPosition < clip.startTime + clip.duration,
         ),
@@ -5044,7 +5007,7 @@ export const Preview: React.FC = () => {
       audioGraph.setPreviewMuted(isMuted);
 
       const tracksWithAudio = timelineTracksRef.current.filter(
-        (t) => (t.type === "audio" || t.type === "video") && !t.hidden,
+        (track) => !track.hidden && trackHasAudioItems(project, track.id),
       );
       for (const track of tracksWithAudio) {
         audioGraph.createTrack({
@@ -5095,7 +5058,7 @@ export const Preview: React.FC = () => {
       await masterClock.play();
       audioGraph.startScheduler(getAudioClipsForScheduler);
 
-      const frameDuration = 1000 / 30;
+      const frameDuration = editingFrameDuration;
       let lastFrameTimestamp = performance.now();
       let frameCount = 0;
       let isProcessingFrame = false;
@@ -5139,7 +5102,7 @@ export const Preview: React.FC = () => {
           // Keep the timeline UI clock-aligned with audio even when decoding or
           // effects make the current visual frame expensive to produce.
           const nowPlayhead = performance.now();
-          if (nowPlayhead - lastPlayheadUpdateRef.current >= PLAYHEAD_UPDATE_THROTTLE_MS) {
+          if (nowPlayhead - lastPlayheadUpdateRef.current >= editingFrameDuration) {
             lastPlayheadUpdateRef.current = nowPlayhead;
             setPlayheadPosition(currentPlayhead);
           }
@@ -5155,11 +5118,12 @@ export const Preview: React.FC = () => {
           );
 
           const audioTracksForFrame = timelineTracksRef.current.filter(
-            (t) => t.type === "audio" && !t.hidden,
+            (track) => !track.hidden,
           );
           const hasCurrentAudioClip = audioTracksForFrame.some((track) =>
             track.clips.some(
               (clip) =>
+                mediaClipHasAudio(clip) &&
                 currentPlayhead >= clip.startTime &&
                 currentPlayhead < clip.startTime + clip.duration,
             ),
@@ -5252,6 +5216,7 @@ export const Preview: React.FC = () => {
           const transitionInfoMulti = getTransitionAtTime(
             currentPlayhead,
             timelineTracksRef.current,
+            mediaClipHasVisual,
           );
 
           // Compute these here so they're visible in both the transition path
@@ -5399,6 +5364,7 @@ export const Preview: React.FC = () => {
                         getBehindSubjectStreamId(
                           timelineTracksRef.current,
                           currentPlayhead,
+                          getMediaItem,
                         ),
                       );
                     }
@@ -5426,7 +5392,7 @@ export const Preview: React.FC = () => {
                   const nowTr = performance.now();
                   if (
                     nowTr - lastPlayheadUpdateRef.current >=
-                    PLAYHEAD_UPDATE_THROTTLE_MS
+                    editingFrameDuration
                   ) {
                     lastPlayheadUpdateRef.current = nowTr;
                     setPlayheadPosition(currentPlayhead);
@@ -5492,7 +5458,7 @@ export const Preview: React.FC = () => {
             } | null>
           > = [];
 
-          for (const { clip, track } of sortedClips) {
+          for (const { clip } of sortedClips) {
             if (!isActive) continue;
 
             const clipLocalTime = currentPlayhead - clip.startTime;
@@ -5539,7 +5505,7 @@ export const Preview: React.FC = () => {
             }
 
             const clipMedia = getMediaItem(clip.mediaId);
-            if (track.type === "image" || clipMedia?.type === "image") {
+            if (clipMedia?.type === "image") {
               let cachedBitmap = imageBitmapCacheRef.current.get(clip.id);
               if (
                 !cachedBitmap &&
@@ -5657,31 +5623,19 @@ export const Preview: React.FC = () => {
 
             const clipToTrackIndex = new Map<string, number>();
             tracks.forEach((track, idx) => {
-              if (
-                (track.type === "video" || track.type === "image") &&
-                !track.hidden
-              ) {
+              if (!track.hidden) {
                 for (const clip of track.clips) {
-                  clipToTrackIndex.set(clip.id, idx);
+                  if (mediaClipHasVisual(clip)) {
+                    clipToTrackIndex.set(clip.id, idx);
+                  }
                 }
               }
             });
 
-            const allRenderableTracks = tracks
-              .map((track, idx) => ({ track, originalIndex: idx }))
-              .filter(
-                ({ track }) =>
-                  (track.type === "video" ||
-                    track.type === "image" ||
-                    track.type === "text" ||
-                    track.type === "graphics") &&
-                  !track.hidden,
-              )
-              .sort((a, b) => b.originalIndex - a.originalIndex);
+            const allRenderableTracks = getVisibleTrackRenderOrder(tracks);
 
             if (canvasFillModeRef.current === "blur") {
-              for (const { track, originalIndex } of allRenderableTracks) {
-                if (track.type !== "video") continue;
+              for (const { originalIndex } of allRenderableTracks) {
                 const baseFrame = validFrames.find(
                   (f) => clipToTrackIndex.get(f.clip.id) === originalIndex,
                 );
@@ -5707,96 +5661,30 @@ export const Preview: React.FC = () => {
               rendererRef.current &&
               rendererRef.current.type === "webgpu" &&
               !activeTextNeedsSubject &&
+              currentTextClips.length === 0 &&
+              currentShapeClips.length === 0 &&
+              !hasActiveMotionInstances(currentPlayhead) &&
               !validFrames.some(({ clip }) => clipMasksById.has(clip.id));
 
             if (useGPU) {
               const gpuLayers: GPULayer[] = [];
               const tempBitmaps: ImageBitmap[] = [];
 
-              for (const { track, originalIndex } of allRenderableTracks) {
-                if (track.type === "video") {
-                  const trackFrames = validFrames.filter(
-                    (f) => clipToTrackIndex.get(f.clip.id) === originalIndex,
-                  );
-                  for (const { transform, frame } of trackFrames) {
-                    if (frame instanceof ImageBitmap) {
-                      gpuLayers.push({
-                        bitmap: frame,
-                        transform,
-                      });
-                    }
-                  }
-                } else if (track.type === "image") {
-                  const trackFrames = validFrames.filter(
-                    (f) => clipToTrackIndex.get(f.clip.id) === originalIndex,
-                  );
-                  for (const { transform, frame } of trackFrames) {
-                    drawFrameWithTransform(
-                      ctx,
-                      frame,
+              for (const { originalIndex } of allRenderableTracks) {
+                const trackFrames = validFrames.filter(
+                  (frame) =>
+                    clipToTrackIndex.get(frame.clip.id) === originalIndex,
+                );
+                for (const { transform, frame } of trackFrames) {
+                  if (frame instanceof ImageBitmap) {
+                    gpuLayers.push({
+                      bitmap: frame,
                       transform,
-                      canvas.width,
-                      canvas.height,
-                    );
-                  }
-                } else if (track.type === "graphics") {
-                  const trackShapeClips = activeShapeClips.filter(
-                    (sc) => sc.trackId === track.id,
-                  );
-                  for (const shapeClip of trackShapeClips) {
-                    await renderShapeClipWithEffects(
-                      ctx,
-                      shapeClip,
-                      canvas.width,
-                      canvas.height,
-                      currentPlayhead,
-                    );
-                  }
-                  await renderMotionInstancesForTrack(
-                    ctx,
-                    track,
-                    currentPlayhead,
-                    canvas.width,
-                    canvas.height,
-                  );
-                } else if (track.type === "text") {
-                  const trackTextClips = activeTextClips.filter(
-                    (tc) => tc.trackId === track.id,
-                  );
-                  for (const textClip of trackTextClips) {
-                    const offscreen = new OffscreenCanvas(
-                      canvas.width,
-                      canvas.height,
-                    );
-                    const offCtx = offscreen.getContext("2d");
-                    if (offCtx) {
-                      renderTextClipToCanvas(
-                        offCtx as unknown as CanvasRenderingContext2D,
-                        textClip,
-                        canvas.width,
-                        canvas.height,
-                        currentPlayhead,
-                      );
-                      const prepared = await preparePreviewFrame(
-                        textClip.id,
-                        offscreen,
-                        true,
-                        true,
-                      );
-                      const bitmap = await createImageBitmap(prepared.frame);
-                      prepared.cleanup();
-                      tempBitmaps.push(bitmap);
-                      gpuLayers.push({
-                        bitmap,
-                        transform: {
-                          ...DEFAULT_TRANSFORM,
-                          opacity: 1,
-                          scale: { x: 1, y: 1 },
-                          position: { x: 0, y: 0 },
-                          anchor: { x: 0, y: 0 },
-                        },
-                      });
-                    }
+                    });
+                  } else {
+                    const bitmap = await createImageBitmap(frame);
+                    tempBitmaps.push(bitmap);
+                    gpuLayers.push({ bitmap, transform });
                   }
                 }
               }
@@ -5830,68 +5718,66 @@ export const Preview: React.FC = () => {
             } else {
               let subjectFrame: ImageBitmap | null = null;
               for (const { track, originalIndex } of allRenderableTracks) {
-                if (track.type === "video" || track.type === "image") {
-                  const trackFrames = validFrames.filter(
-                    (f) => clipToTrackIndex.get(f.clip.id) === originalIndex,
-                  );
-                  for (const { clip, transform, frame } of trackFrames) {
-                    await drawClipFrame(
-                      ctx,
-                      clip.id,
-                      frame,
-                      transform,
-                      canvas.width,
-                      canvas.height,
-                      currentPlayhead,
-                    );
-                    if (activeTextNeedsSubject) {
-                      subjectFrame?.close();
-                      subjectFrame = await captureSubjectFrame(
-                        ctx,
-                        canvas.width,
-                        canvas.height,
-                      );
-                    }
-                  }
-                } else if (track.type === "graphics") {
-                  const trackShapeClips = activeShapeClips.filter(
-                    (sc) => sc.trackId === track.id,
-                  );
-                  for (const shapeClip of trackShapeClips) {
-                    await renderShapeClipWithEffects(
-                      ctx,
-                      shapeClip,
-                      canvas.width,
-                      canvas.height,
-                      currentPlayhead,
-                    );
-                  }
-                  await renderMotionInstancesForTrack(
+                const trackFrames = validFrames.filter(
+                  (frame) =>
+                    clipToTrackIndex.get(frame.clip.id) === originalIndex,
+                );
+                for (const { clip, transform, frame } of trackFrames) {
+                  await drawClipFrame(
                     ctx,
-                    track,
-                    currentPlayhead,
+                    clip.id,
+                    frame,
+                    transform,
                     canvas.width,
                     canvas.height,
+                    currentPlayhead,
                   );
-                } else if (track.type === "text") {
-                  const trackTextClips = activeTextClips.filter(
-                    (tc) => tc.trackId === track.id,
-                  );
-                  for (const textClip of trackTextClips) {
-                    await renderTextClipWithSubjectMask(
+                  if (activeTextNeedsSubject) {
+                    subjectFrame?.close();
+                    subjectFrame = await captureSubjectFrame(
                       ctx,
-                      textClip,
                       canvas.width,
                       canvas.height,
-                      currentPlayhead,
-                      subjectFrame,
-                      true,
-                      getBehindSubjectStreamId(
-                        timelineTracksRef.current,
-                        currentPlayhead,
-                      ),
                     );
                   }
+                }
+                const trackShapeClips = activeShapeClips.filter(
+                  (clip) => clip.trackId === track.id,
+                );
+                for (const shapeClip of trackShapeClips) {
+                  await renderShapeClipWithEffects(
+                    ctx,
+                    shapeClip,
+                    canvas.width,
+                    canvas.height,
+                    currentPlayhead,
+                  );
+                }
+                await renderMotionInstancesForTrack(
+                  ctx,
+                  track,
+                  currentPlayhead,
+                  canvas.width,
+                  canvas.height,
+                );
+                const trackTextClips = activeTextClips.filter(
+                  (clip) => clip.trackId === track.id,
+                );
+                for (const textClip of trackTextClips) {
+                  await renderTextClipWithSubjectMask(
+                    ctx,
+                    textClip,
+                    canvas.width,
+                    canvas.height,
+                    currentPlayhead,
+                    subjectFrame,
+                    true,
+                    getBehindSubjectStreamId(
+                      timelineTracksRef.current,
+                      currentPlayhead,
+                      getMediaItem,
+                    ),
+                  );
                 }
               }
               subjectFrame?.close();
@@ -5986,14 +5872,12 @@ export const Preview: React.FC = () => {
 
     const findNextClipStartTime = (afterTime: number): number | null => {
       const tracks = timelineTracksRef.current;
-      const videoTracks = tracks.filter(
-        (t) => (t.type === "video" || t.type === "image") && !t.hidden,
-      );
+      const videoTracks = tracks.filter((track) => !track.hidden);
       let nextStart: number | null = null;
 
       for (const track of videoTracks) {
         for (const clip of track.clips) {
-          if (clip.startTime > afterTime) {
+          if (mediaClipHasVisual(clip) && clip.startTime > afterTime) {
             if (nextStart === null || clip.startTime < nextStart) {
               nextStart = clip.startTime;
             }
@@ -6048,12 +5932,12 @@ export const Preview: React.FC = () => {
 
     const findNextAudioClipStartTime = (afterTime: number): number | null => {
       const tracks = timelineTracksRef.current;
-      const audioTracks = tracks.filter((t) => t.type === "audio" && !t.hidden);
+      const audioTracks = tracks.filter((track) => !track.hidden);
       let nextStart: number | null = null;
 
       for (const track of audioTracks) {
         for (const clip of track.clips) {
-          if (clip.startTime > afterTime) {
+          if (mediaClipHasAudio(clip) && clip.startTime > afterTime) {
             if (nextStart === null || clip.startTime < nextStart) {
               nextStart = clip.startTime;
             }
@@ -6137,15 +6021,18 @@ export const Preview: React.FC = () => {
     previewRes.width,
     previewRes.height,
     previewRes.scale,
+    editingFrameDuration,
     hasActiveMotionInstances,
     renderMotionInstancesForTrack,
-    project.motionInstances,
+    project,
+    mediaClipHasAudio,
+    mediaClipHasVisual,
     clipMasksById,
     drawClipFrame,
     fillPreviewBackground,
   ]);
 
-  const lastModifiedAtRef = useRef<number>(project.modifiedAt);
+  const lastProjectForRenderRef = useRef(project);
   const lastPlayheadForRenderRef = useRef<number>(playheadPosition);
   const modifiedRenderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const renderInFlightRef = useRef<boolean>(false);
@@ -6155,7 +6042,7 @@ export const Preview: React.FC = () => {
     if (isPlaying) return;
 
     if (isInteractingRef.current) {
-      lastModifiedAtRef.current = project.modifiedAt;
+      lastProjectForRenderRef.current = project;
       return;
     }
 
@@ -6163,9 +6050,9 @@ export const Preview: React.FC = () => {
     if (!canvas) return;
 
     const playheadChanged = playheadPosition !== lastPlayheadForRenderRef.current;
-    const modifiedChanged = project.modifiedAt !== lastModifiedAtRef.current;
+    const projectChanged = project !== lastProjectForRenderRef.current;
 
-    lastModifiedAtRef.current = project.modifiedAt;
+    lastProjectForRenderRef.current = project;
     lastPlayheadForRenderRef.current = playheadPosition;
 
     const previousRenderTime = lastPreviewRenderTimeRef.current;
@@ -6205,7 +6092,7 @@ export const Preview: React.FC = () => {
 
     if (playheadChanged) {
       doRender(playheadPosition);
-    } else if (modifiedChanged) {
+    } else if (projectChanged) {
       if (modifiedRenderTimerRef.current) {
         clearTimeout(modifiedRenderTimerRef.current);
       }
@@ -6228,7 +6115,7 @@ export const Preview: React.FC = () => {
     renderFrameDirectly,
     renderFallbackFrame,
     releaseScrubVideoElements,
-    project.modifiedAt,
+    project,
     isDark,
   ]);
 
@@ -6267,11 +6154,12 @@ export const Preview: React.FC = () => {
   }, [selectedClipId, timelineTracks]);
 
   const clipAtPlayhead = useMemo(() => {
-    const videoTracks = timelineTracks.filter(
-      (t) => (t.type === "video" || t.type === "image") && !t.hidden,
-    );
+    const videoTracks = timelineTracks.filter((track) => !track.hidden);
     for (const track of videoTracks) {
       for (const clip of track.clips) {
+        if (!mediaClipHasVisual(clip)) {
+          continue;
+        }
         const clipStart = clip.startTime;
         const clipEnd = clip.startTime + clip.duration;
         if (playheadPosition >= clipStart && playheadPosition < clipEnd) {
@@ -6280,7 +6168,7 @@ export const Preview: React.FC = () => {
       }
     }
     return null;
-  }, [timelineTracks, playheadPosition]);
+  }, [timelineTracks, playheadPosition, mediaClipHasVisual]);
 
   const selectedTextClipId = useMemo(() => {
     const textClipSelection = selectedItems.find(
@@ -7451,8 +7339,9 @@ export const Preview: React.FC = () => {
   );
 
   const handleMouseUp = useCallback(() => {
+    let transformCommit: ReturnType<typeof updateClipTransform> | null = null;
     if (pendingTransformRef.current) {
-      updateClipTransform(
+      transformCommit = updateClipTransform(
         pendingTransformRef.current.clipId,
         pendingTransformRef.current.transform,
       );
@@ -7474,7 +7363,11 @@ export const Preview: React.FC = () => {
     setCanvasSnapGuides({ x: null, y: null });
 
     if (wasInteracting) {
-      renderFrameDirectly(playheadPosition);
+      if (transformCommit) {
+        void transformCommit.then(() => renderFrameDirectly(playheadPosition));
+      } else {
+        void renderFrameDirectly(playheadPosition);
+      }
     }
   }, [updateClipTransform, renderFrameDirectly, playheadPosition]);
 
@@ -7498,8 +7391,11 @@ export const Preview: React.FC = () => {
   useEffect(() => {
     if (interactionMode !== "none") {
       const handleGlobalMouseUp = () => {
+        let transformCommit: ReturnType<
+          typeof updateClipTransform
+        > | null = null;
         if (pendingTransformRef.current) {
-          updateClipTransform(
+          transformCommit = updateClipTransform(
             pendingTransformRef.current.clipId,
             pendingTransformRef.current.transform,
           );
@@ -7518,7 +7414,13 @@ export const Preview: React.FC = () => {
         setLiveTransform(null);
 
         if (wasInteracting) {
-          renderFrameDirectly(playheadPosition);
+          if (transformCommit) {
+            void transformCommit.then(() =>
+              renderFrameDirectly(playheadPosition),
+            );
+          } else {
+            void renderFrameDirectly(playheadPosition);
+          }
         }
       };
 

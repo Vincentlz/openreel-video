@@ -139,6 +139,7 @@ export class ActionHistory {
   private redoStack: HistoryEntry[] = [];
   private maxHistorySize: number;
   private currentGroupId: string | null = null;
+  private groupDepth = 0;
   private snapshots: HistorySnapshot[] = [];
   private listeners: Set<() => void> = new Set();
   private lastActionTime: number = 0;
@@ -217,11 +218,21 @@ export class ActionHistory {
   }
 
   beginGroup(_description?: string): string {
+    if (this.currentGroupId) {
+      this.groupDepth += 1;
+      return this.currentGroupId;
+    }
     this.currentGroupId = `group-${Date.now()}`;
+    this.groupDepth = 1;
     return this.currentGroupId;
   }
 
   endGroup(): void {
+    if (this.groupDepth > 1) {
+      this.groupDepth -= 1;
+      return;
+    }
+    this.groupDepth = 0;
     this.currentGroupId = null;
     this.notify();
   }
@@ -363,6 +374,7 @@ export class ActionHistory {
     this.redoStack = [];
     this.snapshots = [];
     this.currentGroupId = null;
+    this.groupDepth = 0;
     this.notify();
   }
 

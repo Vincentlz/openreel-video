@@ -84,9 +84,6 @@ export const EditorActionRail: React.FC = () => {
     }
   }, [createMotionComposition, navigate]);
 
-  const isDesktop =
-    typeof window !== "undefined" && window.openreel?.platform === "desktop";
-
   return (
     <nav
       data-tour="toolbar"
@@ -152,14 +149,6 @@ export const EditorActionRail: React.FC = () => {
         onClick={() => togglePanel("agentChat")}
         active={Boolean(panels.agentChat?.visible)}
       />
-      {isDesktop && (
-        <RailButton
-          label="AI"
-          icon="sparkles"
-          onClick={() => togglePanel("ai")}
-          active={Boolean(panels.ai?.visible)}
-        />
-      )}
       <RailButton
         label="Project JSON / Comments"
         icon="curlybraces"

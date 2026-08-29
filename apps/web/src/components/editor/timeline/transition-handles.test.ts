@@ -113,4 +113,24 @@ describe("resolveTransitionHandles", () => {
     );
     expect(result).toHaveLength(1);
   });
+
+  it("builds adjacency from eligible visual clips on a mixed track", () => {
+    const video = clip("video", 0, 2);
+    const audio = clip("audio", 2, 1);
+    const image = clip("image", 2, 3);
+
+    const result = resolveTransitionHandles(
+      track(
+        [video, audio, image],
+        [transition("visual-transition", "video", "image")],
+      ),
+      50,
+      (candidate) => candidate.id !== "audio",
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.transition?.id).toBe("visual-transition");
+    expect(result[0]?.clipA.id).toBe("video");
+    expect(result[0]?.clipB?.id).toBe("image");
+  });
 });

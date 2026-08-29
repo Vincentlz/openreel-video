@@ -142,35 +142,40 @@ function nativeBackendFactory() {
   );
 }
 
-async function uploadExport(
+async function saveExportLocally(
   blob: Blob,
   projectName: string | undefined,
   ext: string,
   contentType: string,
 ): Promise<JobResult> {
-  const bridge = window.openreel?.gpu?.uploadExport;
-  if (typeof bridge !== "function") {
-    return { ok: false, error: "Export upload is only available in the desktop app" };
-  }
+  const bridge = window.openreel?.fs;
+  if (!bridge) return { ok: false, error: "Local export storage is unavailable" };
   const filename = `${sanitizeName(projectName)}-${Date.now()}.${ext}`;
-  const bytes = await blob.arrayBuffer();
-  const { mediaKey, downloadUrl } = await bridge({ bytes, filename, contentType });
-  if (!downloadUrl) {
-    return {
-      ok: false,
-      error: `Export uploaded (key ${mediaKey}) but the broker returned no download URL`,
-    };
+  const path = await bridge.tempFilePath(ext);
+  const handleId = await bridge.openWrite(path);
+  const reader = blob.stream().getReader();
+  let position = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      await bridge.writeChunk(handleId, value, position);
+      position += value.byteLength;
+    }
+    await bridge.closeWrite(handleId);
+  } catch (error) {
+    await bridge.abortWrite(handleId).catch(() => {});
+    throw error;
   }
   return {
     ok: true,
     data: {
-      url: downloadUrl,
-      mediaKey,
+      path,
       filename,
       bytes: blob.size,
       format: ext,
       contentType,
-      expiresInSec: 900,
+      storage: "local",
     },
   };
 }
@@ -210,7 +215,7 @@ export function createExportJobRunner(): JobRunner {
         if (blob.size === 0) {
           return { ok: false, error: "Video export produced no data" };
         }
-        return await uploadExport(blob, project.name, ext, blob.type || contentType);
+        return await saveExportLocally(blob, project.name, ext, blob.type || contentType);
       }
 
       if (kind === "exportAudio") {
@@ -220,7 +225,7 @@ export function createExportJobRunner(): JobRunner {
           return { ok: false, error: result.error?.message ?? "Audio export failed" };
         }
         const ext = (AUDIO_FORMATS.has(format as AudioExportSettings["format"]) ? format : "wav");
-        return await uploadExport(result.blob, project.name, ext, result.blob.type || AUDIO_MIME[ext]);
+        return await saveExportLocally(result.blob, project.name, ext, result.blob.type || AUDIO_MIME[ext]);
       }
 
       if (kind === "exportFrame") {

@@ -26,6 +26,10 @@ import {
   getPanFromAudioEffects,
   getPreviewAudioEffects,
 } from "../audio/audio-effect-routing";
+import {
+  getMediaItemCapabilities,
+  trackHasAudioItems,
+} from "../timeline/timeline-items";
 
 export class PlaybackController {
   private videoEngine: VideoEngine | null = null;
@@ -570,11 +574,12 @@ export class PlaybackController {
   private setupTracksInAudioGraph(): void {
     if (!this.project) return;
 
-    const hasSoloTracks = this.project.timeline.tracks.some((t) => t.solo);
+    const audioTracks = this.project.timeline.tracks.filter((track) =>
+      trackHasAudioItems(this.project!, track.id),
+    );
+    const hasSoloTracks = audioTracks.some((track) => track.solo);
 
-    for (const track of this.project.timeline.tracks) {
-      if (track.type !== "audio" && track.type !== "video") continue;
-
+    for (const track of audioTracks) {
       this.realtimeAudioGraph.createTrack({
         trackId: track.id,
         volume: 1.0,
@@ -597,14 +602,14 @@ export class PlaybackController {
     const { timeline, mediaLibrary } = this.project;
 
     for (const track of timeline.tracks) {
-      if (track.type !== "audio" && track.type !== "video") continue;
-
       for (const clip of track.clips) {
         const clipEnd = clip.startTime + clip.duration;
         if (clipEnd <= time || clip.startTime > time + 1) continue;
 
         const mediaItem = mediaLibrary.items.find((m) => m.id === clip.mediaId);
-        if (!mediaItem?.blob) continue;
+        if (!mediaItem?.blob || !getMediaItemCapabilities(mediaItem).audio) {
+          continue;
+        }
 
         const cachedBuffer = this.getOrDecodeAudioBuffer(mediaItem);
         if (!cachedBuffer) continue;
@@ -639,11 +644,13 @@ export class PlaybackController {
     const mediaIdsToPreload = new Set<string>();
 
     for (const track of timeline.tracks) {
-      if (track.type !== "audio" && track.type !== "video") continue;
-
       for (const clip of track.clips) {
         const mediaItem = mediaLibrary.items.find((m) => m.id === clip.mediaId);
-        if (mediaItem?.blob && !this.audioBufferCache.has(mediaItem.id)) {
+        if (
+          mediaItem?.blob &&
+          getMediaItemCapabilities(mediaItem).audio &&
+          !this.audioBufferCache.has(mediaItem.id)
+        ) {
           mediaIdsToPreload.add(mediaItem.id);
         }
       }
@@ -723,9 +730,13 @@ export class PlaybackController {
   private pruneAudioBuffers(project: Project): void {
     const referenced = new Set<string>();
     for (const track of project.timeline.tracks) {
-      if (track.type !== "audio" && track.type !== "video") continue;
       for (const clip of track.clips) {
-        referenced.add(clip.mediaId);
+        const mediaItem = project.mediaLibrary.items.find(
+          (candidate) => candidate.id === clip.mediaId,
+        );
+        if (getMediaItemCapabilities(mediaItem).audio) {
+          referenced.add(clip.mediaId);
+        }
       }
     }
 

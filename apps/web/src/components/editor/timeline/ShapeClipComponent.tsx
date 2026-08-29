@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { ToolcraftContextMenu as ContextMenu } from "@openreel/ui";
 import { Shapes, FileCode, Smile } from "@/icons/lucide-compat";
-import type { ShapeClip, SVGClip, StickerClip } from "@openreel/core";
+import type { ShapeClip, SVGClip, StickerClip, Track } from "@openreel/core";
 import { useGraphicsClipContextMenuItems } from "./GraphicsClipContextMenu";
 import { calculateSnap } from "./utils";
 import { useProjectStore } from "../../../stores/project-store";
@@ -16,7 +16,14 @@ interface ShapeClipComponentProps {
   isSelected: boolean;
   onSelect: (clipId: string, addToSelection: boolean) => void;
   onTrim: (clipId: string, edge: "left" | "right", newTime: number) => void;
-  onMoveClip: (clipId: string, newStartTime: number) => void;
+  onMoveClip: (
+    clipId: string,
+    newStartTime: number,
+    targetTrackId?: string,
+  ) => void | Promise<void>;
+  allTracks: Track[];
+  trackHeights: Map<string, number>;
+  timelineRef: React.RefObject<HTMLDivElement | null>;
 }
 
 export const ShapeClipComponent: React.FC<ShapeClipComponentProps> = ({
@@ -26,12 +33,18 @@ export const ShapeClipComponent: React.FC<ShapeClipComponentProps> = ({
   onSelect,
   onTrim,
   onMoveClip,
+  allTracks,
+  trackHeights,
+  timelineRef,
 }) => {
   const clipRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState(0);
   const [isTrimming, setIsTrimming] = useState<"left" | "right" | null>(null);
   const historyGroupOpenRef = useRef(false);
+  const pendingDropRef = useRef<{ time: number; targetTrackId?: string }>({
+    time: shapeClip.startTime,
+  });
   const { snapSettings } = useUIStore();
   const { playheadPosition } = useTimelineStore();
   const trimStartRef = useRef<{
@@ -105,7 +118,6 @@ export const ShapeClipComponent: React.FC<ShapeClipComponentProps> = ({
       const rect = timelineElement.getBoundingClientRect();
       const x = e.clientX - rect.left - dragOffset;
       const rawTime = Math.max(0, x / pixelsPerSecond);
-      const allTracks = useProjectStore.getState().project.timeline.tracks;
       const dragSnapSettings = { ...snapSettings, snapToPlayhead: false };
       const snapResult = calculateSnap(
         rawTime,
@@ -116,10 +128,34 @@ export const ShapeClipComponent: React.FC<ShapeClipComponentProps> = ({
         pixelsPerSecond,
         shapeClip.duration,
       );
+      const timelineRect = timelineRef.current?.getBoundingClientRect();
+      const scrollTop = timelineRef.current?.scrollTop ?? 0;
+      let targetTrackId: string | undefined;
+      if (timelineRect) {
+        const mouseY = e.clientY - timelineRect.top + scrollTop;
+        let cumulativeY = 0;
+        for (const track of allTracks) {
+          const height = trackHeights.get(track.id) ?? 48;
+          if (mouseY >= cumulativeY && mouseY < cumulativeY + height) {
+            if (!track.locked && track.id !== shapeClip.trackId) {
+              targetTrackId = track.id;
+            }
+            break;
+          }
+          cumulativeY += height;
+        }
+      }
+      pendingDropRef.current = { time: snapResult.time, targetTrackId };
       onMoveClip(shapeClip.id, snapResult.time);
     };
 
-    const handleMouseUp = () => {
+    const handleMouseUp = async () => {
+      const pending = pendingDropRef.current;
+      await onMoveClip(
+        shapeClip.id,
+        pending.time,
+        pending.targetTrackId ?? shapeClip.trackId,
+      );
       setIsDragging(false);
       endTimingGesture();
     };
@@ -131,7 +167,21 @@ export const ShapeClipComponent: React.FC<ShapeClipComponentProps> = ({
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [isDragging, dragOffset, pixelsPerSecond, shapeClip.id, shapeClip.duration, onMoveClip, snapSettings, playheadPosition, endTimingGesture]);
+  }, [
+    isDragging,
+    dragOffset,
+    pixelsPerSecond,
+    shapeClip.id,
+    shapeClip.trackId,
+    shapeClip.duration,
+    onMoveClip,
+    snapSettings,
+    playheadPosition,
+    endTimingGesture,
+    timelineRef,
+    allTracks,
+    trackHeights,
+  ]);
 
   useEffect(() => {
     if (!isTrimming) return;

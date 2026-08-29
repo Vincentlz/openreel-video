@@ -13,6 +13,7 @@ import {
 import {
   AudioDucker,
   resolveAudibleAudioTarget,
+  trackHasAudioItems,
   type Clip,
   type Project,
   type Track,
@@ -106,8 +107,7 @@ const findClipById = (project: Project, clipId: string): Clip | null => {
 };
 
 const getTrackLabel = (track: Track): string => {
-  const prefix = track.type === "video" ? "Video" : "Audio";
-  return track.name || `${prefix} ${track.id.slice(-4)}`;
+  return track.name || `Track ${track.id.slice(-4)}`;
 };
 
 interface DuckingSliderProps {
@@ -266,10 +266,10 @@ export const AudioDuckingSection: React.FC<AudioDuckingSectionProps> = ({
 
     return project.timeline.tracks.filter(
       (track): track is Track =>
-        (track.type === "audio" || track.type === "video") &&
+        trackHasAudioItems(project, track.id) &&
         !track.clips.every((clip) => excludedClipIds.has(clip.id)),
     );
-  }, [audioTargetClip?.id, clipId, project.timeline.tracks]);
+  }, [audioTargetClip?.id, clipId, project]);
 
   const currentTrack = useMemo(() => {
     for (const track of project.timeline.tracks) {

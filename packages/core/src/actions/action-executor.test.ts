@@ -153,7 +153,8 @@ describe("ActionExecutor transform/update", () => {
   it("deep-merges a partial axis (does not drop the other) and round-trips", async () => {
     const executor = new ActionExecutor();
     const project = makeProjectWithClip();
-    const before = JSON.stringify(project);
+    const beforeTimeline = JSON.stringify(project.timeline);
+    const beforeModifiedAt = project.modifiedAt;
 
     const result = await executor.execute(
       {
@@ -169,9 +170,53 @@ describe("ActionExecutor transform/update", () => {
       x: 100,
       y: 0,
     });
+    expect(project.modifiedAt).toBeGreaterThan(beforeModifiedAt);
 
     await executor.undo(project);
-    expect(JSON.stringify(project)).toBe(before);
+    expect(JSON.stringify(project.timeline)).toBe(beforeTimeline);
+  });
+
+  it("keeps one visual clip while moving it and fully removes it", async () => {
+    const executor = new ActionExecutor();
+    const project = makeProjectWithClip();
+    (project.timeline.tracks[0] as { type: string }).type = "image";
+
+    const beforeMove = project.modifiedAt;
+    const move = await executor.execute(
+      {
+        id: "move-image",
+        type: "clip/move",
+        params: { clipId: "c1", startTime: 2 },
+        timestamp: Date.now(),
+      } as Action,
+      project,
+    );
+
+    expect(move.success).toBe(true);
+    expect(
+      project.timeline.tracks.flatMap((track) => track.clips).filter(
+        (clip) => clip.id === "c1",
+      ),
+    ).toHaveLength(1);
+    expect(project.timeline.tracks[0].clips[0].startTime).toBe(2);
+    expect(project.modifiedAt).toBeGreaterThan(beforeMove);
+
+    const remove = await executor.execute(
+      {
+        id: "remove-image",
+        type: "clip/remove",
+        params: { clipId: "c1" },
+        timestamp: Date.now(),
+      } as Action,
+      project,
+    );
+
+    expect(remove.success).toBe(true);
+    expect(
+      project.timeline.tracks.flatMap((track) => track.clips).filter(
+        (clip) => clip.id === "c1",
+      ),
+    ).toHaveLength(0);
   });
 });
 
@@ -445,16 +490,27 @@ describe("ActionExecutor track/rename", () => {
 describe("ActionExecutor track/duplicate", () => {
   it("duplicates clips and remaps transition references with one-step undo", async () => {
     const executor = new ActionExecutor();
-    const project = makeProjectWithTransitions([
-      {
-        id: "transition-source",
-        clipAId: "c1",
-        clipBId: "c2",
-        type: "crossfade",
-        duration: 1,
-        params: {},
-      },
-    ]);
+    const project = {
+      ...makeProjectWithTransitions([
+        {
+          id: "transition-source",
+          clipAId: "c1",
+          clipBId: "c2",
+          type: "crossfade",
+          duration: 1,
+          params: {},
+        },
+      ]),
+      textClips: [
+        {
+          id: "text-source",
+          trackId: "t1",
+          startTime: 1,
+          duration: 2,
+          text: "Mixed track title",
+        },
+      ],
+    } as unknown as Project;
 
     const result = await executor.execute(
       {
@@ -483,13 +539,68 @@ describe("ActionExecutor track/duplicate", () => {
       clipBId: duplicate.clips[1].id,
     });
     expect(duplicate.transitions[0].id).not.toBe("transition-source");
+    expect(project.textClips).toHaveLength(2);
+    const duplicatedText = project.textClips?.find(
+      (item) => item.id !== "text-source",
+    );
+    expect(duplicatedText?.trackId).toBe(duplicate.id);
+    const duplicatedTextId = duplicatedText?.id;
 
     await executor.undo(project);
     expect(project.timeline.tracks).toHaveLength(1);
+    expect(project.textClips?.map((item) => item.id)).toEqual(["text-source"]);
 
     await executor.redo(project);
     expect(project.timeline.tracks).toHaveLength(2);
     expect(project.timeline.tracks[1].name).toBe("V1 Copy");
+    expect(project.textClips?.find((item) => item.trackId === duplicate.id)?.id).toBe(
+      duplicatedTextId,
+    );
+  });
+
+  it("removes and restores project-level items owned by a track", async () => {
+    const executor = new ActionExecutor();
+    const project = {
+      ...makeProjectWithTransitions(),
+      shapeClips: [
+        {
+          id: "shape-source",
+          trackId: "t1",
+          startTime: 1,
+          duration: 2,
+          type: "shape",
+        },
+      ],
+      motionInstances: [
+        {
+          id: "motion-source",
+          compositionId: "composition-1",
+          trackId: "t1",
+          startTime: 3,
+          duration: 2,
+        },
+      ],
+    } as unknown as Project;
+
+    const result = await executor.execute(
+      {
+        id: "remove-mixed-track",
+        type: "track/remove",
+        params: { trackId: "t1" },
+        timestamp: Date.now(),
+      },
+      project,
+    );
+
+    expect(result.success).toBe(true);
+    expect(project.timeline.tracks).toHaveLength(0);
+    expect(project.shapeClips).toEqual([]);
+    expect(project.motionInstances).toEqual([]);
+
+    await executor.undo(project);
+    expect(project.timeline.tracks).toHaveLength(1);
+    expect(project.shapeClips?.[0]?.id).toBe("shape-source");
+    expect(project.motionInstances?.[0]?.id).toBe("motion-source");
   });
 });
 

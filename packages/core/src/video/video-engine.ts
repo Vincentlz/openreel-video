@@ -84,6 +84,11 @@ import { MotionHighQualityRenderer } from "../motion/motion-gpu-render";
 import { renderAuroraPreviewToImageBitmap } from "../motion/native-aurora-bridge";
 import type { MotionAsset } from "../motion/types";
 import { resolveCreationMotionSceneBinding } from "../creation/render-binding";
+import { resolveCanvasFitDimensions } from "./canvas-fit";
+import {
+  getMediaItemCapabilities,
+  getVisibleTrackRenderOrder,
+} from "../timeline/timeline-items";
 
 const DEFAULT_CACHE_CONFIG: FrameCacheConfig = {
   maxFrames: 100,
@@ -654,17 +659,7 @@ export class VideoEngine {
     const activeSubtitles = this.getActiveSubtitles(timeline, time);
 
 
-    const allRenderableTracks = timeline.tracks
-      .map((track, idx) => ({ track, originalIndex: idx }))
-      .filter(
-        ({ track }) =>
-          (track.type === "video" ||
-            track.type === "image" ||
-            track.type === "text" ||
-            track.type === "graphics") &&
-          !track.hidden,
-      )
-      .sort((a, b) => b.originalIndex - a.originalIndex);
+    const allRenderableTracks = getVisibleTrackRenderOrder(timeline.tracks);
 
     if (
       !this.compositeCanvas ||
@@ -706,22 +701,34 @@ export class VideoEngine {
       (clip) => clip.behindSubject,
     );
     const subjectStreamId = `video-engine:text-behind-subject:${allRenderableTracks
-      .filter(
-        ({ track }) => track.type === "video" || track.type === "image",
-      )
       .flatMap(({ track }) =>
         track.clips
           .filter(
             (clip) =>
-              time >= clip.startTime && time < clip.startTime + clip.duration,
+              time >= clip.startTime &&
+              time < clip.startTime + clip.duration &&
+              getMediaItemCapabilities(
+                mediaLibrary.items.find((item) => item.id === clip.mediaId),
+              ).visual,
           )
           .map((clip) => clip.id),
       )
       .sort()
       .join("|") || "canvas"}`;
 
+    await this.renderMotionInstancesToCanvasCtx(
+      ctx,
+      project,
+      time,
+      width,
+      height,
+      scaleX,
+      scaleY,
+      null,
+    );
+
     for (const { track } of allRenderableTracks) {
-      if (track.type === "video" || track.type === "image") {
+      {
         // If a clip-to-clip transition is active in this track at `time`,
         // decode both participating clips, blend them, and draw the result.
         // The clip IDs that were rendered as part of the transition are
@@ -741,7 +748,11 @@ export class VideoEngine {
           subjectFrame = await this.captureSubjectFrame(ctx, width, height);
         }
 
-        const clips = this.getClipsAtTime(track, time);
+        const clips = this.getClipsAtTime(track, time).filter((clip) =>
+          getMediaItemCapabilities(
+            mediaLibrary.items.find((item) => item.id === clip.mediaId),
+          ).visual,
+        );
         for (const clip of clips) {
           if (renderedTransitionClips.has(clip.id)) continue;
           const clipInfo = this.createClipRenderInfo(clip, time);
@@ -767,10 +778,7 @@ export class VideoEngine {
                   x: transform.position.x * scaleX,
                   y: transform.position.y * scaleY,
                 },
-                scale: {
-                  x: transform.scale.x * scaleX,
-                  y: transform.scale.y * scaleY,
-                },
+                scale: { ...transform.scale },
               };
               let processed = compoundFrame;
               try {
@@ -944,10 +952,7 @@ export class VideoEngine {
                 x: finalTransform.position.x * scaleX,
                 y: finalTransform.position.y * scaleY,
               },
-              scale: {
-                x: finalTransform.scale.x * scaleX,
-                y: finalTransform.scale.y * scaleY,
-              },
+              scale: { ...finalTransform.scale },
             };
 
             let processedBitmap = bitmap;
@@ -1024,38 +1029,60 @@ export class VideoEngine {
           }
         }
       }
-    }
 
-    // Overlays composite on top of all clip tracks, matching the preview's layering.
-    for (const shapeClip of activeShapeClips) {
-      await this.renderShapeClipToCanvasCtx(ctx, shapeClip, time, width, height);
-    }
-    for (const svgClip of activeSVGClips) {
-      await this.renderSVGClipToCanvasCtx(ctx, svgClip, time, width, height);
-    }
-    for (const stickerClip of activeStickerClips) {
-      await this.renderStickerClipToCanvasCtx(ctx, stickerClip, time, width, height);
-    }
-    await this.renderMotionInstancesToCanvasCtx(
-      ctx,
-      project,
-      time,
-      width,
-      height,
-      scaleX,
-      scaleY,
-    );
-    for (const textClip of activeTextClips) {
-      await this.renderTextClipWithSubjectMask(
+      for (const shapeClip of activeShapeClips.filter(
+        (clip) => clip.trackId === track.id,
+      )) {
+        await this.renderShapeClipToCanvasCtx(
+          ctx,
+          shapeClip,
+          time,
+          width,
+          height,
+        );
+      }
+      for (const svgClip of activeSVGClips.filter(
+        (clip) => clip.trackId === track.id,
+      )) {
+        await this.renderSVGClipToCanvasCtx(ctx, svgClip, time, width, height);
+      }
+      for (const stickerClip of activeStickerClips.filter(
+        (clip) => clip.trackId === track.id,
+      )) {
+        await this.renderStickerClipToCanvasCtx(
+          ctx,
+          stickerClip,
+          time,
+          width,
+          height,
+        );
+      }
+      await this.renderMotionInstancesToCanvasCtx(
         ctx,
-        textClip,
+        project,
         time,
         width,
         height,
-        subjectFrame,
-        options.realtime ?? false,
-        subjectStreamId,
+        scaleX,
+        scaleY,
+        track.id,
       );
+      for (const textClip of activeTextClips.filter(
+        (clip) => clip.trackId === track.id,
+      )) {
+        await this.renderTextClipWithSubjectMask(
+          ctx,
+          textClip,
+          time,
+          width,
+          height,
+          settings.width,
+          settings.height,
+          subjectFrame,
+          options.realtime ?? false,
+          subjectStreamId,
+        );
+      }
     }
     subjectFrame?.close();
 
@@ -1180,6 +1207,7 @@ export class VideoEngine {
     height: number,
     scaleX: number,
     scaleY: number,
+    targetTrackId?: string | null,
   ): Promise<void> {
     const compositions = project.motionCompositions ?? [];
     const instances = (project.motionInstances ?? [])
@@ -1194,6 +1222,12 @@ export class VideoEngine {
       })
       .filter(({ instance, track }) => {
         if (track?.hidden) return false;
+        if (
+          targetTrackId !== undefined &&
+          (instance.trackId ?? null) !== targetTrackId
+        ) {
+          return false;
+        }
         return (
           time >= instance.startTime &&
           time < instance.startTime + instance.duration
@@ -1351,75 +1385,36 @@ export class VideoEngine {
     ctx.rotate((transform.rotation * Math.PI) / 180);
     ctx.scale(transform.scale.x, transform.scale.y);
 
-    if (transform.crop) {
-      const sx = transform.crop.x * frame.width;
-      const sy = transform.crop.y * frame.height;
-      const sWidth = transform.crop.width * frame.width;
-      const sHeight = transform.crop.height * frame.height;
+    const crop = transform.crop;
+    const sourceWidth = crop ? crop.width * frame.width : frame.width;
+    const sourceHeight = crop ? crop.height * frame.height : frame.height;
+    const { width: drawWidth, height: drawHeight } =
+      resolveCanvasFitDimensions(
+        transform.fitMode,
+        sourceWidth,
+        sourceHeight,
+        canvasWidth,
+        canvasHeight,
+      );
+    const drawX = -drawWidth * transform.anchor.x;
+    const drawY = -drawHeight * transform.anchor.y;
 
-      const croppedAspect = sWidth / sHeight;
-      const canvasAspect = canvasWidth / canvasHeight;
-
-      let cropDrawWidth: number;
-      let cropDrawHeight: number;
-
-      if (croppedAspect > canvasAspect) {
-        cropDrawWidth = canvasWidth;
-        cropDrawHeight = canvasWidth / croppedAspect;
-      } else {
-        cropDrawHeight = canvasHeight;
-        cropDrawWidth = canvasHeight * croppedAspect;
-      }
-
-      const cropDrawX = -cropDrawWidth * transform.anchor.x;
-      const cropDrawY = -cropDrawHeight * transform.anchor.y;
+    if (crop) {
+      const sx = crop.x * frame.width;
+      const sy = crop.y * frame.height;
 
       ctx.drawImage(
         frame,
         sx,
         sy,
-        sWidth,
-        sHeight,
-        cropDrawX,
-        cropDrawY,
-        cropDrawWidth,
-        cropDrawHeight,
+        sourceWidth,
+        sourceHeight,
+        drawX,
+        drawY,
+        drawWidth,
+        drawHeight,
       );
     } else {
-      // Treat a missing or "none" fit as "contain" so clips preserve their
-      // aspect ratio on export/compositing, matching the preview.
-      const fitMode =
-        !transform.fitMode || transform.fitMode === "none"
-          ? "contain"
-          : transform.fitMode;
-      let drawWidth = frame.width;
-      let drawHeight = frame.height;
-
-      const sourceAspect = frame.width / frame.height;
-      const canvasAspect = canvasWidth / canvasHeight;
-      if (fitMode === "stretch") {
-        drawWidth = canvasWidth;
-        drawHeight = canvasHeight;
-      } else if (fitMode === "cover") {
-        if (sourceAspect > canvasAspect) {
-          drawHeight = canvasHeight;
-          drawWidth = canvasHeight * sourceAspect;
-        } else {
-          drawWidth = canvasWidth;
-          drawHeight = canvasWidth / sourceAspect;
-        }
-      } else {
-        if (sourceAspect > canvasAspect) {
-          drawWidth = canvasWidth;
-          drawHeight = canvasWidth / sourceAspect;
-        } else {
-          drawHeight = canvasHeight;
-          drawWidth = canvasHeight * sourceAspect;
-        }
-      }
-
-      const drawX = -drawWidth * transform.anchor.x;
-      const drawY = -drawHeight * transform.anchor.y;
       ctx.drawImage(frame, drawX, drawY, drawWidth, drawHeight);
     }
 
@@ -1496,17 +1491,18 @@ export class VideoEngine {
   ): Promise<void> {
     const baseTracks = timeline.tracks
       .map((track, idx) => ({ track, idx }))
-      .filter(
-        ({ track }) =>
-          (track.type === "video" || track.type === "image") && !track.hidden,
-      )
+      .filter(({ track }) => !track.hidden)
       // Highest index renders behind, so the bottom-most layer is the backdrop.
       .sort((a, b) => b.idx - a.idx);
 
     let frame: ImageBitmap | null = null;
     let ownsFrame = false;
     for (const { track } of baseTracks) {
-      const clips = this.getClipsAtTime(track, time);
+      const clips = this.getClipsAtTime(track, time).filter((candidate) =>
+        getMediaItemCapabilities(
+          mediaLibrary.items.find((item) => item.id === candidate.mediaId),
+        ).visual,
+      );
       if (clips.length === 0) continue;
       const clip = clips[0];
       const clipInfo = this.createClipRenderInfo(clip, time);
@@ -1711,6 +1707,8 @@ export class VideoEngine {
     time: number,
     width: number,
     height: number,
+    projectWidth: number,
+    projectHeight: number,
     subjectFrame: ImageBitmap | null,
     realtime: boolean,
     streamId: string,
@@ -1733,7 +1731,15 @@ export class VideoEngine {
     }
 
     if (!textClip.behindSubject || !subjectFrame || !subjectMask) {
-      await this.renderTextClipToCanvasCtx(ctx, textClip, time, width, height);
+      await this.renderTextClipToCanvasCtx(
+        ctx,
+        textClip,
+        time,
+        width,
+        height,
+        projectWidth,
+        projectHeight,
+      );
       return;
     }
 
@@ -1746,6 +1752,8 @@ export class VideoEngine {
       time,
       width,
       height,
+      projectWidth,
+      projectHeight,
     );
     if (
       !this.applySubjectOcclusionMask(
@@ -1763,13 +1771,12 @@ export class VideoEngine {
 
   private getActiveTextClips(timeline: Timeline, time: number): TextClip[] {
     const allTextClips = titleEngine.getAllTextClips();
-    const textTracks = timeline.tracks.filter(
-      (t) => t.type === "text" && !t.hidden,
+    const visibleTrackIds = new Set(
+      timeline.tracks.filter((track) => !track.hidden).map((track) => track.id),
     );
-    const textTrackIds = new Set(textTracks.map((t) => t.id));
 
     return allTextClips.filter((clip) => {
-      if (!textTrackIds.has(clip.trackId)) return false;
+      if (!visibleTrackIds.has(clip.trackId)) return false;
       const clipEnd = clip.startTime + clip.duration;
       return time >= clip.startTime && time < clipEnd;
     });
@@ -1777,13 +1784,12 @@ export class VideoEngine {
 
   private getActiveShapeClips(timeline: Timeline, time: number): ShapeClip[] {
     const allShapeClips = graphicsEngine.getAllShapeClips();
-    const graphicsTracks = timeline.tracks.filter(
-      (t) => t.type === "graphics" && !t.hidden,
+    const visibleTrackIds = new Set(
+      timeline.tracks.filter((track) => !track.hidden).map((track) => track.id),
     );
-    const graphicsTrackIds = new Set(graphicsTracks.map((t) => t.id));
 
     return allShapeClips.filter((clip) => {
-      if (!graphicsTrackIds.has(clip.trackId)) return false;
+      if (!visibleTrackIds.has(clip.trackId)) return false;
       const clipEnd = clip.startTime + clip.duration;
       return time >= clip.startTime && time < clipEnd;
     });
@@ -1794,13 +1800,12 @@ export class VideoEngine {
     time: number,
   ): import("../graphics/types").SVGClip[] {
     const allSVGClips = graphicsEngine.getAllSVGClips();
-    const graphicsTracks = timeline.tracks.filter(
-      (t) => t.type === "graphics" && !t.hidden,
+    const visibleTrackIds = new Set(
+      timeline.tracks.filter((track) => !track.hidden).map((track) => track.id),
     );
-    const graphicsTrackIds = new Set(graphicsTracks.map((t) => t.id));
 
     return allSVGClips.filter((clip) => {
-      if (!graphicsTrackIds.has(clip.trackId)) return false;
+      if (!visibleTrackIds.has(clip.trackId)) return false;
       const clipEnd = clip.startTime + clip.duration;
       return time >= clip.startTime && time < clipEnd;
     });
@@ -1811,13 +1816,12 @@ export class VideoEngine {
     time: number,
   ): import("../graphics/types").StickerClip[] {
     const allStickerClips = graphicsEngine.getAllStickerClips();
-    const graphicsTracks = timeline.tracks.filter(
-      (t) => t.type === "graphics" && !t.hidden,
+    const visibleTrackIds = new Set(
+      timeline.tracks.filter((track) => !track.hidden).map((track) => track.id),
     );
-    const graphicsTrackIds = new Set(graphicsTracks.map((t) => t.id));
 
     return allStickerClips.filter((clip) => {
-      if (!graphicsTrackIds.has(clip.trackId)) return false;
+      if (!visibleTrackIds.has(clip.trackId)) return false;
       const clipEnd = clip.startTime + clip.duration;
       return time >= clip.startTime && time < clipEnd;
     });
@@ -1829,6 +1833,8 @@ export class VideoEngine {
     time: number,
     width: number,
     height: number,
+    projectWidth: number,
+    projectHeight: number,
   ): Promise<void> {
     const clipLocalTime = time - textClip.startTime;
     const result = titleEngine.renderText(
@@ -1836,6 +1842,10 @@ export class VideoEngine {
       width,
       height,
       clipLocalTime,
+      {
+        x: projectWidth > 0 ? width / projectWidth : 1,
+        y: projectHeight > 0 ? height / projectHeight : 1,
+      },
     );
 
     await this.drawOverlayCanvasWithEffects(
@@ -2224,7 +2234,14 @@ export class VideoEngine {
     const mediaB = clipB
       ? mediaLibrary.items.find((m) => m.id === clipB.mediaId)
       : undefined;
-    if (!mediaA?.blob || (clipB && !mediaB?.blob)) return rendered;
+    if (
+      !mediaA?.blob ||
+      !getMediaItemCapabilities(mediaA).visual ||
+      (clipB &&
+        (!mediaB?.blob || !getMediaItemCapabilities(mediaB).visual))
+    ) {
+      return rendered;
+    }
 
     let bitmapA: ImageBitmap | null = null;
     let bitmapB: ImageBitmap | null = null;
@@ -3400,75 +3417,36 @@ export class VideoEngine {
 
     ctx.scale(transform.scale.x, transform.scale.y);
 
-    if (transform.crop) {
-      const sx = transform.crop.x * frame.width;
-      const sy = transform.crop.y * frame.height;
-      const sWidth = transform.crop.width * frame.width;
-      const sHeight = transform.crop.height * frame.height;
+    const crop = transform.crop;
+    const sourceWidth = crop ? crop.width * frame.width : frame.width;
+    const sourceHeight = crop ? crop.height * frame.height : frame.height;
+    const { width: drawWidth, height: drawHeight } =
+      resolveCanvasFitDimensions(
+        transform.fitMode,
+        sourceWidth,
+        sourceHeight,
+        canvasWidth,
+        canvasHeight,
+      );
+    const drawX = -drawWidth * transform.anchor.x;
+    const drawY = -drawHeight * transform.anchor.y;
 
-      const croppedAspect = sWidth / sHeight;
-      const canvasAspect = canvasWidth / canvasHeight;
-
-      let cropDrawWidth: number;
-      let cropDrawHeight: number;
-
-      if (croppedAspect > canvasAspect) {
-        cropDrawWidth = canvasWidth;
-        cropDrawHeight = canvasWidth / croppedAspect;
-      } else {
-        cropDrawHeight = canvasHeight;
-        cropDrawWidth = canvasHeight * croppedAspect;
-      }
-
-      const cropDrawX = -cropDrawWidth * transform.anchor.x;
-      const cropDrawY = -cropDrawHeight * transform.anchor.y;
+    if (crop) {
+      const sx = crop.x * frame.width;
+      const sy = crop.y * frame.height;
 
       ctx.drawImage(
         frame,
         sx,
         sy,
-        sWidth,
-        sHeight,
-        cropDrawX,
-        cropDrawY,
-        cropDrawWidth,
-        cropDrawHeight,
+        sourceWidth,
+        sourceHeight,
+        drawX,
+        drawY,
+        drawWidth,
+        drawHeight,
       );
     } else {
-      // Treat a missing or "none" fit as "contain" so clips preserve their
-      // aspect ratio on export/compositing, matching the preview.
-      const fitMode =
-        !transform.fitMode || transform.fitMode === "none"
-          ? "contain"
-          : transform.fitMode;
-      let drawWidth = frame.width;
-      let drawHeight = frame.height;
-
-      const sourceAspect = frame.width / frame.height;
-      const canvasAspect = canvasWidth / canvasHeight;
-      if (fitMode === "stretch") {
-        drawWidth = canvasWidth;
-        drawHeight = canvasHeight;
-      } else if (fitMode === "cover") {
-        if (sourceAspect > canvasAspect) {
-          drawHeight = canvasHeight;
-          drawWidth = canvasHeight * sourceAspect;
-        } else {
-          drawWidth = canvasWidth;
-          drawHeight = canvasWidth / sourceAspect;
-        }
-      } else {
-        if (sourceAspect > canvasAspect) {
-          drawWidth = canvasWidth;
-          drawHeight = canvasWidth / sourceAspect;
-        } else {
-          drawHeight = canvasHeight;
-          drawWidth = canvasHeight * sourceAspect;
-        }
-      }
-
-      const drawX = -drawWidth * transform.anchor.x;
-      const drawY = -drawHeight * transform.anchor.y;
       ctx.drawImage(frame, drawX, drawY, drawWidth, drawHeight);
     }
 
